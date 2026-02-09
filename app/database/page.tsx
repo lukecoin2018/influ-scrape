@@ -97,6 +97,27 @@ export default function DatabasePage() {
           <h1 className="text-4xl font-bold text-slate-900 mb-2">Creator Database</h1>
           <p className="text-slate-600">Browse and manage all discovered creators</p>
         </div>
+{/* Navigation */}
+<div className="flex gap-2 mb-6">
+        <a
+          href="/"
+          className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+        >
+          Discovery
+        </a>
+        <a
+          href="/database"
+          className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium"
+        >
+          Creators
+        </a>
+        <a
+          href="/brands"
+          className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+        >
+          Brands
+        </a>
+      </div>
 
         {/* Stats */}
         <DatabaseStats />

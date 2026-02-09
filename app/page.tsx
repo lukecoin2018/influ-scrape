@@ -4,14 +4,13 @@ import { useState } from 'react';
 import SetupPanel from '@/components/SetupPanel';
 import ProgressPanel from '@/components/ProgressPanel';
 import ResultsTable from '@/components/ResultsTable';
-import ExportButton from '@/components/ExportButton';
-import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, InstagramProfile } from '@/lib/types';
-import { extractUniqueUsernames, mapProfileToCreator } from '@/lib/apify';
+import BrandsTable from '@/components/BrandsTable';
+import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, DetectedBrand, Partnership, SponsorshipStats } from '@/lib/types';
+import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from '@/lib/brandDetection';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'setup' | 'progress' | 'results'>('setup');
-  const [isRunning, setIsRunning] = useState(false);
-  const [shouldStop, setShouldStop] = useState(false);
+  const [resultsTab, setResultsTab] = useState<'creators' | 'brands'>('creators');
   const [status, setStatus] = useState<PipelineStatus>({
     stage: 'idle',
     progress: 0,
@@ -23,44 +22,32 @@ export default function Home() {
       creatorsInRange: 0,
     },
   });
+  const [discoveryConfig, setDiscoveryConfig] = useState<DiscoveryConfig | null>(null);
   const [creators, setCreators] = useState<DiscoveredCreator[]>([]);
+  const [brands, setBrands] = useState<DetectedBrand[]>([]);
+  const [sponsorshipStats, setSponsorshipStats] = useState<SponsorshipStats>({
+    sponsoredPostsFound: 0,
+    brandsDetected: 0,
+    partnershipsLogged: 0,
+  });
 
-  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-  const pollRunStatus = async (runId: string): Promise<{ status: string; datasetId?: string }> => {
-    while (true) {
-      if (shouldStop) {
-        throw new Error('Discovery stopped by user');
-      }
-
-      const response = await fetch(`/api/discover/run-status/${runId}`);
-      const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      if (data.status === 'SUCCEEDED') {
-        return data;
-      } else if (data.status === 'FAILED' || data.status === 'ABORTED') {
-        throw new Error(`Actor run ${data.status.toLowerCase()}`);
-      }
-
-      await sleep(3000);
-    }
-  };
-
-  const startDiscovery = async (discoveryConfig: DiscoveryConfig) => {
-    setIsRunning(true);
-    setShouldStop(false);
-    setCreators([]);
+  const startDiscovery = async (config: DiscoveryConfig) => {
+    setDiscoveryConfig(config);
     setActiveTab('progress');
+    setCreators([]);
+    setBrands([]);
+    setSponsorshipStats({
+      sponsoredPostsFound: 0,
+      brandsDetected: 0,
+      partnershipsLogged: 0,
+    });
 
     try {
+      // Stage 1: Scrape hashtags
       setStatus({
         stage: 'hashtags',
         progress: 10,
-        message: `Starting to scrape ${discoveryConfig.hashtags.length} hashtags...`,
+        message: 'Scraping hashtag posts...',
         stats: { postsFound: 0, uniqueHandles: 0, profilesScraped: 0, creatorsInRange: 0 },
       });
 
@@ -68,260 +55,391 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          hashtags: discoveryConfig.hashtags,
-          resultsPerHashtag: discoveryConfig.resultsPerHashtag,
+          hashtags: config.hashtags,
+          resultsPerHashtag: config.resultsPerHashtag,
         }),
       });
 
-      const hashtagData = await hashtagResponse.json();
-      if (hashtagData.error) {
-        throw new Error(hashtagData.error);
-      }
+      const { runId } = await hashtagResponse.json();
 
-      setStatus(prev => ({
-        ...prev,
-        progress: 20,
-        message: 'Scraping hashtag posts...',
-      }));
+      // Poll hashtag scrape
+      let hashtagComplete = false;
+      while (!hashtagComplete) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
+        const runStatus = await statusResponse.json();
 
-      const hashtagResult = await pollRunStatus(hashtagData.runId);
-
-      if (!hashtagResult.datasetId) {
-        throw new Error('No dataset ID returned from hashtag scraper');
-      }
-
-      setStatus(prev => ({
-        ...prev,
-        progress: 40,
-        message: 'Fetching hashtag results...',
-      }));
-
-      const postsResponse = await fetch(`/api/discover/dataset/${hashtagResult.datasetId}`);
-      const postsData = await postsResponse.json();
-
-      if (postsData.error) {
-        throw new Error(postsData.error);
-      }
-
-      const posts = postsData.items || [];
-      const uniqueUsernames = extractUniqueUsernames(posts);
-
-      setStatus(prev => ({
-        ...prev,
-        progress: 50,
-        message: `Found ${posts.length} posts from ${uniqueUsernames.length} unique creators`,
-        stats: {
-          ...prev.stats,
-          postsFound: posts.length,
-          uniqueHandles: uniqueUsernames.length,
-        },
-      }));
-
-      if (uniqueUsernames.length === 0) {
-        throw new Error('No creators found in hashtag results');
-      }
-
-      await sleep(1000);
-
-      setStatus(prev => ({
-        ...prev,
-        stage: 'profiles',
-        progress: 50,
-        message: 'Starting to scrape creator profiles...',
-      }));
-
-      const batchSize = 50;
-      const batches = [];
-      for (let i = 0; i < uniqueUsernames.length; i += batchSize) {
-        batches.push(uniqueUsernames.slice(i, i + batchSize));
-      }
-
-      let allProfiles: unknown[] = [];
-
-      for (let i = 0; i < batches.length; i++) {
-        if (shouldStop) {
-          throw new Error('Discovery stopped by user');
+        if (runStatus.status === 'SUCCEEDED') {
+          hashtagComplete = true;
+        } else if (runStatus.status === 'FAILED') {
+          throw new Error('Hashtag scraping failed');
         }
-
-        const batch = batches[i];
-        const batchProgress = 50 + (i / batches.length) * 30;
 
         setStatus(prev => ({
           ...prev,
-          progress: batchProgress,
-          message: `Scraping batch ${i + 1} of ${batches.length} (${batch.length} profiles)...`,
+          progress: 20,
+          message: `Scraping hashtags... ${runStatus.status}`,
         }));
+      }
 
+      // Fetch hashtag results
+      const resultsResponse = await fetch(`/api/discover/dataset/${runId}`);
+      let allPosts = await resultsResponse.json();
+
+      // Sponsorship mode: filter by niche and detect brands
+      let allPartnerships: Partnership[] = [];
+      let detectedBrandHandles = new Set<string>();
+
+      if (config.mode === 'sponsorship') {
+        // Filter posts by niche keywords
+        if (config.nicheKeywords && config.nicheKeywords.length > 0) {
+          allPosts = filterPostsByNiche(allPosts, config.nicheKeywords);
+        }
+
+        // Detect brands in each post
+        allPosts.forEach((post: any) => {
+          const brandDetection = detectBrandsInPost(post);
+          
+          if (brandDetection.isSponsoredContent && brandDetection.brandHandles.length > 0) {
+            const partnerships = createPartnershipRecords(
+              post,
+              brandDetection,
+              config.hashtags[0] || 'unknown'
+            );
+            allPartnerships.push(...partnerships);
+            brandDetection.brandHandles.forEach(handle => detectedBrandHandles.add(handle));
+          }
+        });
+
+        setSponsorshipStats({
+          sponsoredPostsFound: allPosts.length,
+          brandsDetected: detectedBrandHandles.size,
+          partnershipsLogged: allPartnerships.length,
+        });
+      }
+
+      const uniqueCreatorHandles = Array.from(new Set(allPosts.map((p: any) => p.ownerUsername)));
+
+      setStatus(prev => ({
+        ...prev,
+        progress: 30,
+        message: `Found ${allPosts.length} posts from ${uniqueCreatorHandles.length} creators`,
+        stats: {
+          ...prev.stats,
+          postsFound: allPosts.length,
+          uniqueHandles: uniqueCreatorHandles.length,
+        },
+      }));
+
+      // Stage 2: Scrape creator profiles
+      setStatus(prev => ({ ...prev, stage: 'profiles', progress: 40, message: 'Scraping creator profiles...' }));
+
+      const batchSize = 50;
+      const batches = [];
+      for (let i = 0; i < uniqueCreatorHandles.length; i += batchSize) {
+        batches.push(uniqueCreatorHandles.slice(i, i + batchSize));
+      }
+
+      let allProfiles: any[] = [];
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        
         const profileResponse = await fetch('/api/discover/start-profile-scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ usernames: batch }),
         });
 
-        const profileData = await profileResponse.json();
-        if (profileData.error) {
-          console.error(`Error in batch ${i + 1}:`, profileData.error);
-          continue;
-        }
+        const { runId: profileRunId } = await profileResponse.json();
 
-        const profileResult = await pollRunStatus(profileData.runId);
+        let profileComplete = false;
+        while (!profileComplete) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          const statusResponse = await fetch(`/api/discover/run-status/${profileRunId}`);
+          const runStatus = await statusResponse.json();
 
-        if (profileResult.datasetId) {
-          const batchProfilesResponse = await fetch(`/api/discover/dataset/${profileResult.datasetId}`);
-          const batchProfilesData = await batchProfilesResponse.json();
-
-          if (!batchProfilesData.error && batchProfilesData.items) {
-            allProfiles = allProfiles.concat(batchProfilesData.items);
-            
-            setStatus(prev => ({
-              ...prev,
-              stats: {
-                ...prev.stats,
-                profilesScraped: allProfiles.length,
-              },
-            }));
+          if (runStatus.status === 'SUCCEEDED') {
+            profileComplete = true;
+          } else if (runStatus.status === 'FAILED') {
+            throw new Error('Profile scraping failed');
           }
+
+          const progress = 40 + ((i + 1) / batches.length) * 30;
+          setStatus(prev => ({
+            ...prev,
+            progress,
+            message: `Scraping profiles (batch ${i + 1}/${batches.length})...`,
+          }));
         }
 
-        if (i < batches.length - 1) {
-          await sleep(2000);
-        }
+        const batchResultsResponse = await fetch(`/api/discover/dataset/${profileRunId}`);
+        const batchProfiles = await batchResultsResponse.json();
+        allProfiles = allProfiles.concat(batchProfiles);
       }
 
       setStatus(prev => ({
         ...prev,
-        progress: 80,
-        message: `Scraped ${allProfiles.length} profiles. Filtering results...`,
+        progress: 70,
+        stats: { ...prev.stats, profilesScraped: allProfiles.length },
       }));
 
+      // Stage 3: Filter and save creators
       setStatus(prev => ({
         ...prev,
         stage: 'filtering',
-        progress: 85,
+        progress: 80,
         message: 'Filtering creators by follower count...',
       }));
 
-      const filteredCreators = (allProfiles as InstagramProfile[])
+      const { mapProfileToCreator } = await import('@/lib/apify');
+      const filteredCreators = (allProfiles as any[])
         .map(mapProfileToCreator)
         .filter(creator => {
           return (
-            creator.followerCount >= discoveryConfig.minFollowers &&
-            creator.followerCount <= discoveryConfig.maxFollowers
+            creator.followerCount >= config.minFollowers &&
+            creator.followerCount <= config.maxFollowers
           );
         });
-
-      setStatus(prev => ({
-        ...prev,
-        progress: 95,
-        message: `Found ${filteredCreators.length} creators in range!`,
-        stats: {
-          ...prev.stats,
-          creatorsInRange: filteredCreators.length,
-        },
-      }));
-
-      await sleep(500);
 
       setCreators(filteredCreators);
 
       setStatus(prev => ({
         ...prev,
-        stage: 'complete',
-        progress: 100,
-        message: `Discovery complete! Found ${filteredCreators.length} creators.`,
+        progress: 90,
+        message: `Found ${filteredCreators.length} creators in range`,
+        stats: { ...prev.stats, creatorsInRange: filteredCreators.length },
       }));
 
+      // Save creators to database
+      await fetch('/api/database/save-creators', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          creators: filteredCreators,
+          runMetadata: {
+            hashtags: config.hashtags,
+            resultsPerHashtag: config.resultsPerHashtag,
+            minFollowers: config.minFollowers,
+            maxFollowers: config.maxFollowers,
+            totalPostsFound: allPosts.length,
+            uniqueHandlesFound: uniqueCreatorHandles.length,
+            profilesScraped: allProfiles.length,
+            creatorsInRange: filteredCreators.length,
+          },
+        }),
+      });
+
+      // Sponsorship mode: scrape and save brands
+      if (config.mode === 'sponsorship' && detectedBrandHandles.size > 0) {
+        setStatus(prev => ({
+          ...prev,
+          progress: 92,
+          message: 'Scraping brand profiles...',
+        }));
+
+        const brandHandlesArray = Array.from(detectedBrandHandles);
+        const brandBatches = [];
+        for (let i = 0; i < brandHandlesArray.length; i += batchSize) {
+          brandBatches.push(brandHandlesArray.slice(i, i + batchSize));
+        }
+
+        let allBrandProfiles: any[] = [];
+
+        for (const batch of brandBatches) {
+          const brandResponse = await fetch('/api/discover/start-profile-scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ usernames: batch }),
+          });
+
+          const { runId: brandRunId } = await brandResponse.json();
+
+          let brandComplete = false;
+          while (!brandComplete) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            const statusResponse = await fetch(`/api/discover/run-status/${brandRunId}`);
+            const runStatus = await statusResponse.json();
+
+            if (runStatus.status === 'SUCCEEDED') {
+              brandComplete = true;
+            } else if (runStatus.status === 'FAILED') {
+              console.error('Brand profile scraping failed');
+              break;
+            }
+          }
+
+          const batchResultsResponse = await fetch(`/api/discover/dataset/${brandRunId}`);
+          const batchBrands = await batchResultsResponse.json();
+          allBrandProfiles = allBrandProfiles.concat(batchBrands);
+        }
+
+        // Convert to DetectedBrand format
+        const detectedBrands: DetectedBrand[] = allBrandProfiles.map(profile => ({
+          handle: profile.username || profile.profileName || '',
+          brandName: profile.fullName || profile.username || '',
+          bio: profile.biography || profile.bio || '',
+          followerCount: profile.followersCount || profile.followedByCount || 0,
+          followingCount: profile.followsCount || profile.followingCount || 0,
+          isVerified: profile.verified || false,
+          categoryName: profile.businessCategoryName || '',
+          website: profile.externalUrl || profile.url || '',
+          profilePicUrl: profile.profilePicUrl || '',
+          profileUrl: `https://instagram.com/${profile.username || profile.profileName}`,
+        }));
+
+        setBrands(detectedBrands);
+
+        // Save brands to database
+        await fetch('/api/database/save-brands', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ brands: detectedBrands }),
+        });
+
+        // Save partnerships to database
+        await fetch('/api/database/save-partnerships', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ partnerships: allPartnerships }),
+        });
+      }
+
+      // Complete
+      setStatus({
+        stage: 'complete',
+        progress: 100,
+        message: 'Discovery complete!',
+        stats: {
+          postsFound: allPosts.length,
+          uniqueHandles: uniqueCreatorHandles.length,
+          profilesScraped: allProfiles.length,
+          creatorsInRange: filteredCreators.length,
+        },
+      });
+
       setActiveTab('results');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-      console.error('Discovery error:', error);
-      setStatus(prev => ({
-        ...prev,
+    } catch (error: any) {
+      setStatus({
         stage: 'error',
+        progress: 0,
         message: 'Discovery failed',
-        error: errorMessage,
-      }));
-    } finally {
-      setIsRunning(false);
-      setShouldStop(false);
+        error: error.message,
+        stats: { postsFound: 0, uniqueHandles: 0, profilesScraped: 0, creatorsInRange: 0 },
+      });
     }
   };
 
-  const handleStop = () => {
-    setShouldStop(true);
-    setStatus(prev => ({
-      ...prev,
-      message: 'Stopping discovery...',
-    }));
-  };
-
   return (
-    <div className="min-h-screen py-8 px-4">
-      <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-12">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-violet-600 bg-clip-text text-transparent mb-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">
             InfluenceAI Discovery
           </h1>
-          <p className="text-slate-600 text-lg">
-            Discover Instagram influencers by hashtag and follower count
-          </p>
+          <p className="text-slate-600">Discover Instagram creators and brand partnerships through hashtag analysis</p>
         </div>
 
+        {/* Navigation */}
         <div className="flex gap-2 mb-6">
+        <a
+            href="/"
+            className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium"
+          >
+            Discovery
+          </a>
+          <a
+            href="/database"
+            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+          >
+            Creators
+          </a>
+          <a
+            href="/brands"
+            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+          >
+            Brands
+          </a>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-4 mb-6">
           <button
             onClick={() => setActiveTab('setup')}
-            disabled={isRunning}
-            className={`px-6 py-3 font-semibold rounded-xl transition-all ${
+            className={`px-6 py-3 rounded-lg font-medium transition-all ${
               activeTab === 'setup'
-                ? 'bg-white text-slate-900 shadow-md'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
             Setup
           </button>
           <button
             onClick={() => setActiveTab('progress')}
-            disabled={!isRunning && status.stage === 'idle'}
-            className={`px-6 py-3 font-semibold rounded-xl transition-all ${
+            className={`px-6 py-3 rounded-lg font-medium transition-all ${
               activeTab === 'progress'
-                ? 'bg-white text-slate-900 shadow-md'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
             Progress
           </button>
           <button
             onClick={() => setActiveTab('results')}
-            disabled={creators.length === 0}
-            className={`px-6 py-3 font-semibold rounded-xl transition-all ${
+            className={`px-6 py-3 rounded-lg font-medium transition-all ${
               activeTab === 'results'
-                ? 'bg-white text-slate-900 shadow-md'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
             Results ({creators.length})
           </button>
         </div>
 
-        <div className="mb-6">
-          {activeTab === 'setup' && (
-            <SetupPanel onStartDiscovery={startDiscovery} isRunning={isRunning} />
-          )}
-          {activeTab === 'progress' && (
-            <ProgressPanel status={status} onStop={handleStop} />
-          )}
-          {activeTab === 'results' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold text-slate-900">
-                  Discovered Creators
-                </h2>
-                <ExportButton creators={creators} />
+        {/* Content */}
+        {activeTab === 'setup' && (
+          <SetupPanel onStartDiscovery={startDiscovery} isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} />
+        )}
+
+        {activeTab === 'progress' && (
+          <ProgressPanel status={status} mode={discoveryConfig?.mode || 'niche'} sponsorshipStats={sponsorshipStats} />
+        )}
+
+        {activeTab === 'results' && (
+          <>
+            {discoveryConfig?.mode === 'sponsorship' && (
+              <div className="flex gap-2 mb-6">
+                <button
+                  onClick={() => setResultsTab('creators')}
+                  className={`px-6 py-3 rounded-lg font-medium transition-all ${
+                    resultsTab === 'creators'
+                      ? 'bg-white text-violet-600 shadow-md'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Creators ({creators.length})
+                </button>
+                <button
+                  onClick={() => setResultsTab('brands')}
+                  className={`px-6 py-3 rounded-lg font-medium transition-all ${
+                    resultsTab === 'brands'
+                      ? 'bg-white text-violet-600 shadow-md'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Brands Detected ({brands.length})
+                </button>
               </div>
-              <ResultsTable creators={creators} />
-            </div>
-          )}
-        </div>
+            )}
+
+            {resultsTab === 'creators' && <ResultsTable creators={creators} />}
+            {resultsTab === 'brands' && <BrandsTable brands={brands} />}
+          </>
+        )}
       </div>
     </div>
   );

@@ -3,6 +3,8 @@ export interface DiscoveryConfig {
     minFollowers: number;
     maxFollowers: number;
     resultsPerHashtag: number;
+    mode: DiscoveryMode;
+    nicheKeywords: string[];
   }
   
   export interface PipelineStatus {
@@ -79,3 +81,39 @@ export interface DiscoveryConfig {
     profilePicUrl?: string;
     latestPosts?: unknown[];
   }
+
+export type DiscoveryMode = 'niche' | 'sponsorship';
+
+export interface DetectedBrand {
+  handle: string;
+  brandName: string;
+  bio: string;
+  followerCount: number;
+  followingCount: number;
+  isVerified: boolean;
+  categoryName: string;
+  website: string;
+  profilePicUrl: string;
+  profileUrl: string;
+}
+
+export interface Partnership {
+  creatorHandle: string;
+  brandHandle: string;
+  postUrl: string;
+  postType: string;
+  postCaption: string;
+  postedAt: string;
+  likesCount: number;
+  commentsCount: number;
+  viewsCount: number | null;
+  detectionSignals: string[];
+  detectionConfidence: 'high' | 'medium' | 'low';
+  discoveredViaHashtag: string;
+}
+
+export interface SponsorshipStats {
+  sponsoredPostsFound: number;
+  brandsDetected: number;
+  partnershipsLogged: number;
+}
