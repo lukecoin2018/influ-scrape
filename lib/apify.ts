@@ -155,5 +155,6 @@ export function mapProfileToCreator(profile: InstagramProfile): DiscoveredCreato
     website,
     isBusinessAccount: profile.isBusinessAccount || false,
     categoryName: profile.businessCategoryName || '',
+    latestPosts: (profile.latestPosts || []) as unknown[],
   };
 }
