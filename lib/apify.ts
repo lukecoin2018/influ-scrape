@@ -11,7 +11,7 @@ export async function startHashtagScraper(
   hashtags: string[],
   resultsLimit: number = 100
 ): Promise<{ runId: string; datasetId?: string }> {
-  const actorId = 'apify/instagram-hashtag-scraper';
+  const actorId = 'apify~instagram-hashtag-scraper';
   const input = {
     hashtags,
     resultsLimit,
@@ -19,8 +19,12 @@ export async function startHashtagScraper(
     resultsType: 'posts',
   };
 
-  const response = await fetch(
-    `${APIFY_API_BASE}/actors/${actorId}/runs?token=${APIFY_TOKEN}`,
+  
+  const url = `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`;
+console.log('🔍 Calling Apify URL:', url.replace(APIFY_TOKEN || '', 'REDACTED'));
+
+const response = await fetch(
+  url,
     {
       method: 'POST',
       headers: {
@@ -46,13 +50,13 @@ export async function startHashtagScraper(
 export async function startProfileScraper(
   usernames: string[]
 ): Promise<{ runId: string; datasetId?: string }> {
-  const actorId = 'apify/instagram-profile-scraper';
+  const actorId = 'apify~instagram-profile-scraper';
   const input = {
     usernames,
   };
 
   const response = await fetch(
-    `${APIFY_API_BASE}/actors/${actorId}/runs?token=${APIFY_TOKEN}`,
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
     {
       method: 'POST',
       headers: {
