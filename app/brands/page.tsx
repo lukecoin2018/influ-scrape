@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import BrandStats from '@/components/BrandStats';
 
 interface Brand {
   id: string;
@@ -20,8 +21,16 @@ interface Brand {
   status: string;
 }
 
+interface BrandStatsData {
+  totalBrands: number;
+  addedThisWeek: number;
+  avgPartnerships: number;
+  topCategory: string;
+}
+
 export default function BrandsPage() {
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [stats, setStats] = useState<BrandStatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
@@ -29,8 +38,19 @@ export default function BrandsPage() {
   const limit = 50;
 
   useEffect(() => {
+    fetchStats();
     fetchBrands();
   }, [offset, search]);
+
+  const fetchStats = async () => {
+    try {
+      const response = await fetch('/api/database/get-brand-stats');
+      const data = await response.json();
+      setStats(data);
+    } catch (error) {
+      console.error('Error fetching brand stats:', error);
+    }
+  };
 
   const fetchBrands = async () => {
     setLoading(true);
@@ -68,13 +88,25 @@ export default function BrandsPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-slate-900 mb-2">Brands Database</h1>
           <p className="text-slate-600">Browse detected brands and their partnership activity</p>
         </div>
 
-        {/* Search */}
+        <div className="flex gap-2 mb-6">
+          <a href="/" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Discovery
+          </a>
+          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Creators
+          </a>
+          <a href="/brands" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">
+            Brands
+          </a>
+        </div>
+
+        {stats && <BrandStats stats={stats} />}
+
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
           <label className="block text-sm font-medium text-slate-700 mb-2">Search</label>
           <input
@@ -86,7 +118,6 @@ export default function BrandsPage() {
           />
         </div>
 
-        {/* Table */}
         {loading && brands.length === 0 ? (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-violet-600 mx-auto"></div>
@@ -103,21 +134,11 @@ export default function BrandsPage() {
                 <table className="w-full">
                   <thead className="bg-slate-50 border-b border-slate-200">
                     <tr>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Brand
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Category
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Followers
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Partnerships
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Website
-                      </th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Brand</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Category</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Followers</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Partnerships</th>
+                      <th className="px-6 py-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Website</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -126,19 +147,10 @@ export default function BrandsPage() {
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
                             {brand.profile_pic_url && (
-                              <img
-                                src={brand.profile_pic_url}
-                                alt={brand.instagram_handle}
-                                className="w-10 h-10 rounded-full object-cover"
-                              />
+                              <img src={brand.profile_pic_url} alt={brand.instagram_handle} className="w-10 h-10 rounded-full object-cover" />
                             )}
                             <div>
-                            <a
-                                href={brand.profile_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-semibold text-slate-900 hover:text-violet-600 transition-colors"
-                              >
+                              <a href={brand.profile_url} target="_blank" rel="noopener noreferrer" className="font-semibold text-slate-900 hover:text-violet-600 transition-colors">
                                 @{brand.instagram_handle}
                               </a>
                               {brand.is_verified && (
@@ -150,12 +162,8 @@ export default function BrandsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-sm text-slate-600">
-                          {brand.category_name || 'N/A'}
-                        </td>
-                        <td className="px-6 py-4 text-sm font-medium text-slate-900">
-                          {brand.follower_count.toLocaleString()}
-                        </td>
+                        <td className="px-6 py-4 text-sm text-slate-600">{brand.category_name || 'N/A'}</td>
+                        <td className="px-6 py-4 text-sm font-medium text-slate-900">{brand.follower_count.toLocaleString()}</td>
                         <td className="px-6 py-4">
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800">
                             {brand.total_partnerships_detected} partnerships
@@ -163,12 +171,7 @@ export default function BrandsPage() {
                         </td>
                         <td className="px-6 py-4 text-sm text-slate-600">
                           {brand.website ? (
-                            <a
-                              href={brand.website}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-violet-600 hover:text-violet-700 hover:underline"
-                            >
+                            <a href={brand.website} target="_blank" rel="noopener noreferrer" className="text-violet-600 hover:text-violet-700 hover:underline">
                               Visit
                             </a>
                           ) : (
@@ -182,14 +185,9 @@ export default function BrandsPage() {
               </div>
             </div>
             
-            {/* Load More */}
             {offset + limit < total && (
               <div className="mt-6 text-center">
-                <button
-                  onClick={handleLoadMore}
-                  disabled={loading}
-                  className="px-6 py-3 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
+                <button onClick={handleLoadMore} disabled={loading} className="px-6 py-3 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                   {loading ? 'Loading...' : `Load More (${total - offset - limit} remaining)`}
                 </button>
               </div>
