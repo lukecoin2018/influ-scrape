@@ -35,10 +35,12 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   const detectionSignals = new Set<string>();
   
   // 1. Check paid partnership fields (highest confidence)
-  const paidPartnershipBrands = [
-    ...(post.sponsoredBy || []),
-    ...(post.paidPartnership || [])
-  ].filter(Boolean);
+  const sponsoredBy = Array.isArray(post.sponsoredBy) ? post.sponsoredBy : [];
+const paidPartnership = Array.isArray(post.paidPartnership) ? post.paidPartnership : [];
+const paidPartnershipBrands = [
+  ...sponsoredBy,
+  ...paidPartnership
+].filter(Boolean);
   
   if (paidPartnershipBrands.length > 0) {
     paidPartnershipBrands.forEach(handle => brandHandles.add(handle.toLowerCase().replace('@', '')));
@@ -46,7 +48,7 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   }
 
   // 2. Check tagged users
-  const taggedUsers = post.taggedUsers || [];
+  const taggedUsers = Array.isArray(post.taggedUsers) ? post.taggedUsers : [];
 if (taggedUsers.length > 0) {
   taggedUsers.forEach(handle => {
     if (typeof handle === 'string') {
