@@ -17,6 +17,7 @@ export async function POST(request: NextRequest) {
     for (const brand of brands) {
       const { data, error } = await supabase.rpc('upsert_brand', {
         p_instagram_handle: brand.handle,
+        p_instagram_id: null, // ← Add this!
         p_brand_name: brand.brandName,
         p_bio: brand.bio,
         p_follower_count: brand.followerCount,
