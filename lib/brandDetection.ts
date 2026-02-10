@@ -47,15 +47,17 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
 
   // 2. Check tagged users
   const taggedUsers = post.taggedUsers || [];
-  if (taggedUsers.length > 0) {
-    taggedUsers.forEach(handle => {
+if (taggedUsers.length > 0) {
+  taggedUsers.forEach(handle => {
+    if (typeof handle === 'string') {
       const cleanHandle = handle.toLowerCase().replace('@', '');
-      if (cleanHandle !== post.ownerUsername.toLowerCase()) {
+      if (cleanHandle !== post.ownerUsername?.toLowerCase()) {
         brandHandles.add(cleanHandle);
         detectionSignals.add('tagged_in_post');
       }
-    });
-  }
+    }
+  });
+}
 
   // 3. Extract @mentions from caption
   const caption = post.caption || '';
@@ -63,7 +65,7 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   let match;
   while ((match = mentionRegex.exec(caption)) !== null) {
     const handle = match[1].toLowerCase();
-    if (handle !== post.ownerUsername.toLowerCase()) {
+    if (handle !== post.ownerUsername?.toLowerCase()) {
       brandHandles.add(handle);
       detectionSignals.add('mentioned_in_caption');
     }
