@@ -313,18 +313,24 @@ const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
         setBrands(detectedBrands);
 
         // Save brands to database
-        await fetch('/api/database/save-brands', {
+        console.log('Saving brands to database:', detectedBrands.length);
+        const brandsResponse = await fetch('/api/database/save-brands', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ brands: detectedBrands }),
         });
+        const brandsResult = await brandsResponse.json();
+        console.log('Brands save result:', brandsResult);
 
         // Save partnerships to database
-        await fetch('/api/database/save-partnerships', {
+        console.log('Saving partnerships to database:', allPartnerships.length);
+        const partnershipsResponse = await fetch('/api/database/save-partnerships', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ partnerships: allPartnerships }),
         });
+        const partnershipsResult = await partnershipsResponse.json();
+        console.log('Partnerships save result:', partnershipsResult);
       }
 
       // Complete
