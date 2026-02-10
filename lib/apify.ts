@@ -20,7 +20,7 @@ export async function startHashtagScraper(
   };
 
   const response = await fetch(
-    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    `${APIFY_API_BASE}/actors/${actorId}/runs?token=${APIFY_TOKEN}`,
     {
       method: 'POST',
       headers: {
@@ -52,7 +52,7 @@ export async function startProfileScraper(
   };
 
   const response = await fetch(
-    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    `${APIFY_API_BASE}/actors/${actorId}/runs?token=${APIFY_TOKEN}`,
     {
       method: 'POST',
       headers: {
