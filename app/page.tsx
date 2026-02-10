@@ -64,27 +64,33 @@ export default function Home() {
 
       // Poll hashtag scrape
       let hashtagComplete = false;
-      while (!hashtagComplete) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
-        const runStatus = await statusResponse.json();
+let hashtagRunStatus: any = null;  // ✅ Declare outside loop
 
-        if (runStatus.status === 'SUCCEEDED') {
-          hashtagComplete = true;
-        } else if (runStatus.status === 'FAILED') {
-          throw new Error('Hashtag scraping failed');
-        }
+while (!hashtagComplete) {
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
+  const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
+  hashtagRunStatus = await statusResponse.json();  // ✅ Assign to outer variable
 
-        setStatus(prev => ({
-          ...prev,
-          progress: 20,
-          message: `Scraping hashtags... ${runStatus.status}`,
-        }));
-      }
+  if (hashtagRunStatus.status === 'SUCCEEDED') {
+    hashtagComplete = true;
+  } else if (hashtagRunStatus.status === 'FAILED') {
+    throw new Error('Hashtag scraping failed');
+  }
 
-      // Fetch hashtag results
-      const resultsResponse = await fetch(`/api/discover/dataset/${runId}`);
+  setStatus(prev => ({
+    ...prev,
+    progress: 20,
+    message: `Scraping hashtags... ${hashtagRunStatus.status}`,
+  }));
+}
+
+// Fetch hashtag results using datasetId from run status
+const datasetId = hashtagRunStatus.datasetId;  // ✅ Now in scope
+if (!datasetId) {
+  throw new Error('No dataset ID returned from hashtag scraper');
+}
+const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
       let allPosts = await resultsResponse.json();
 
       // Sponsorship mode: filter by niche and detect brands
@@ -155,15 +161,17 @@ export default function Home() {
         const { runId: profileRunId } = await profileResponse.json();
 
         let profileComplete = false;
+        let profileRunStatus: any = null;
+
         while (!profileComplete) {
           await new Promise(resolve => setTimeout(resolve, 3000));
           
           const statusResponse = await fetch(`/api/discover/run-status/${profileRunId}`);
-          const runStatus = await statusResponse.json();
+          profileRunStatus = await statusResponse.json();
 
-          if (runStatus.status === 'SUCCEEDED') {
+          if (profileRunStatus.status === 'SUCCEEDED') {
             profileComplete = true;
-          } else if (runStatus.status === 'FAILED') {
+          } else if (profileRunStatus.status === 'FAILED') {
             throw new Error('Profile scraping failed');
           }
 
@@ -175,7 +183,11 @@ export default function Home() {
           }));
         }
 
-        const batchResultsResponse = await fetch(`/api/discover/dataset/${profileRunId}`);
+        const profileDatasetId = profileRunStatus.datasetId;
+        if (!profileDatasetId) {
+          throw new Error('No dataset ID returned from profile scraper');
+        }
+        const batchResultsResponse = await fetch(`/api/discover/dataset/${profileDatasetId}`);
         const batchProfiles = await batchResultsResponse.json();
         allProfiles = allProfiles.concat(batchProfiles);
       }
@@ -258,21 +270,28 @@ export default function Home() {
           const { runId: brandRunId } = await brandResponse.json();
 
           let brandComplete = false;
+          let brandRunStatus: any = null;
+
           while (!brandComplete) {
             await new Promise(resolve => setTimeout(resolve, 3000));
             
             const statusResponse = await fetch(`/api/discover/run-status/${brandRunId}`);
-            const runStatus = await statusResponse.json();
+            brandRunStatus = await statusResponse.json();
 
-            if (runStatus.status === 'SUCCEEDED') {
+            if (brandRunStatus.status === 'SUCCEEDED') {
               brandComplete = true;
-            } else if (runStatus.status === 'FAILED') {
+            } else if (brandRunStatus.status === 'FAILED') {
               console.error('Brand profile scraping failed');
               break;
             }
           }
 
-          const batchResultsResponse = await fetch(`/api/discover/dataset/${brandRunId}`);
+          const brandDatasetId = brandRunStatus?.datasetId;
+          if (!brandDatasetId) {
+            console.error('No dataset ID returned from brand scraper');
+            continue; // Skip this batch
+          }
+          const batchResultsResponse = await fetch(`/api/discover/dataset/${brandDatasetId}`);
           const batchBrands = await batchResultsResponse.json();
           allBrandProfiles = allBrandProfiles.concat(batchBrands);
         }
