@@ -17,7 +17,7 @@ export async function GET(
 
     const items = await getDatasetItems(datasetId);
 
-    return NextResponse.json({ items });
+    return NextResponse.json(items);
   } catch (error: any) {
     console.error('Error getting dataset:', error);
     return NextResponse.json(
