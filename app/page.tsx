@@ -552,30 +552,11 @@ export default function Home() {
         </div>
 
         {activeTab === 'setup' && (
-          <div className="space-y-4">
-            <div className="bg-orange-50 border-2 border-orange-200 rounded-xl p-4">
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-orange-900 mb-1">🧪 Test Save Logic First</h3>
-                  <p className="text-sm text-orange-700">
-                    Test with 50 fake creators before running real discovery.
-                  </p>
-                </div>
-                <button
-                  onClick={testSaveLogic}
-                  className="px-6 py-3 bg-orange-600 text-white rounded-lg font-medium hover:bg-orange-700 transition-colors whitespace-nowrap"
-                >
-                  Run Test
-                </button>
-              </div>
-            </div>
-
-            <SetupPanel 
-              onStartDiscovery={startDiscovery} 
-              isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} 
-            />
-          </div>
-        )}
+  <SetupPanel 
+    onStartDiscovery={startDiscovery} 
+    isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} 
+  />
+)}
 
         {activeTab === 'progress' && (
           <ProgressPanel status={status} mode={discoveryConfig?.mode || 'niche'} sponsorshipStats={sponsorshipStats} />
