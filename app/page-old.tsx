@@ -8,23 +8,6 @@ import BrandsTable from '@/components/BrandsTable';
 import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, DetectedBrand, Partnership, SponsorshipStats } from '@/lib/types';
 import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from '@/lib/brandDetection';
 
-function slimCreator(creator: DiscoveredCreator) {
-  return {
-    handle: creator.handle,
-    fullName: creator.fullName || '',
-    bio: (creator.bio || '').slice(0, 500),
-    followerCount: creator.followerCount,
-    followingCount: creator.followingCount,
-    postsCount: creator.postsCount,
-    engagementRate: creator.engagementRate,
-    isVerified: creator.isVerified || false,
-    isBusinessAccount: creator.isBusinessAccount || false,
-    categoryName: creator.categoryName || '',
-    profileUrl: creator.profileUrl || '',
-    website: creator.website || '',
-  };
-}
-
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'setup' | 'progress' | 'results'>('setup');
   const [resultsTab, setResultsTab] = useState<'creators' | 'brands'>('creators');
@@ -81,33 +64,33 @@ export default function Home() {
 
       // Poll hashtag scrape
       let hashtagComplete = false;
-      let hashtagRunStatus: any = null;
+let hashtagRunStatus: any = null;  // ✅ Declare outside loop
 
-      while (!hashtagComplete) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
-        hashtagRunStatus = await statusResponse.json();
+while (!hashtagComplete) {
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
+  const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
+  hashtagRunStatus = await statusResponse.json();  // ✅ Assign to outer variable
 
-        if (hashtagRunStatus.status === 'SUCCEEDED') {
-          hashtagComplete = true;
-        } else if (hashtagRunStatus.status === 'FAILED') {
-          throw new Error('Hashtag scraping failed');
-        }
+  if (hashtagRunStatus.status === 'SUCCEEDED') {
+    hashtagComplete = true;
+  } else if (hashtagRunStatus.status === 'FAILED') {
+    throw new Error('Hashtag scraping failed');
+  }
 
-        setStatus(prev => ({
-          ...prev,
-          progress: 20,
-          message: `Scraping hashtags... ${hashtagRunStatus.status}`,
-        }));
-      }
+  setStatus(prev => ({
+    ...prev,
+    progress: 20,
+    message: `Scraping hashtags... ${hashtagRunStatus.status}`,
+  }));
+}
 
-      // Fetch hashtag results using datasetId from run status
-      const datasetId = hashtagRunStatus.datasetId;
-      if (!datasetId) {
-        throw new Error('No dataset ID returned from hashtag scraper');
-      }
-      const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
+// Fetch hashtag results using datasetId from run status
+const datasetId = hashtagRunStatus.datasetId;  // ✅ Now in scope
+if (!datasetId) {
+  throw new Error('No dataset ID returned from hashtag scraper');
+}
+const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
       let allPosts = await resultsResponse.json();
 
       // Sponsorship mode: filter by niche and detect brands
@@ -242,76 +225,37 @@ export default function Home() {
         stats: { ...prev.stats, creatorsInRange: filteredCreators.length },
       }));
 
-      // === SAVE RESULTS TO DATABASE ===
-      
-      // Track save progress
-      let savedCount = 0;
-      let failedCount = 0;
-      const BATCH_SIZE = 3;
+      // Save creators to database
+     // Save creators to database in batches
+     // Save discovery run metadata (audit log)
+await fetch('/api/database/save-discovery-run', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    hashtags: config?.hashtags || [],
+    resultsPerHashtag: config?.resultsPerHashtag || 0,
+    minFollowers: config?.minFollowers || 0,
+    maxFollowers: config?.maxFollowers || 0,
+    totalPostsFound: allPosts.length,
+    uniqueHandlesFound: uniqueCreatorHandles.length,
+    profilesScraped: allProfiles.length,
+    creatorsInRange: filteredCreators.length,
+    mode: config?.mode || 'niche',
+    nicheKeywords: config?.nicheKeywords || [],
+  }),
+});
 
-      // 1. Save discovery run metadata FIRST
-      try {
-        const runMetaResponse = await fetch('/api/database/save-discovery-run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            hashtags: config.hashtags,
-            resultsPerHashtag: config.resultsPerHashtag,
-            minFollowers: config.minFollowers,
-            maxFollowers: config.maxFollowers,
-            totalPostsFound: allPosts.length,
-            uniqueHandlesFound: uniqueCreatorHandles.length,
-            profilesScraped: allProfiles.length,
-            creatorsInRange: filteredCreators.length,
-          }),
-        });
-        
-        if (!runMetaResponse.ok) {
-          console.error('Failed to save run metadata:', await runMetaResponse.text());
-        }
-      } catch (err) {
-        console.error('Error saving run metadata:', err);
-      }
-
-      // 2. Save creators in small batches
-      const slimmedCreators = filteredCreators.map(slimCreator);
-
-      for (let i = 0; i < slimmedCreators.length; i += BATCH_SIZE) {
-        const batch = slimmedCreators.slice(i, i + BATCH_SIZE);
-        
-        try {
-          const response = await fetch('/api/database/save-creators', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ creators: batch }),
-          });
-          
-          if (response.ok) {
-            const result = await response.json();
-            savedCount += result.saved || batch.length;
-          } else {
-            const errorText = await response.text();
-            console.error(`Batch ${Math.floor(i/BATCH_SIZE) + 1} failed:`, errorText);
-            failedCount += batch.length;
-          }
-        } catch (err) {
-          console.error(`Batch ${Math.floor(i/BATCH_SIZE) + 1} error:`, err);
-          failedCount += batch.length;
-        }
-        
-        setStatus(prev => ({
-          ...prev,
-          message: `Saving to database... ${savedCount} saved, ${failedCount} failed of ${slimmedCreators.length}`,
-        }));
-        
-        await new Promise(r => setTimeout(r, 200));
-      }
-
-      setStatus(prev => ({
-        ...prev,
-        stage: 'complete',
-        message: `Done! ${savedCount} creators saved to database.${failedCount > 0 ? ` ${failedCount} failed.` : ''}`,
-      }));
+// Save creators to database in batches
+const creatorBatchSize = 20;
+for (let i = 0; i < filteredCreators.length; i += creatorBatchSize) {
+  const batch = filteredCreators.slice(i, i + creatorBatchSize);
+  
+  await fetch('/api/database/save-creators', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ creators: batch }),
+  });
+}
 
       // Sponsorship mode: scrape and save brands
       if (config.mode === 'sponsorship' && detectedBrandHandles.size > 0) {
@@ -358,13 +302,14 @@ export default function Home() {
           const brandDatasetId = brandRunStatus?.datasetId;
           if (!brandDatasetId) {
             console.error('No dataset ID returned from brand scraper');
-            continue;
+            continue; // Skip this batch
           }
           const batchResultsResponse = await fetch(`/api/discover/dataset/${brandDatasetId}`);
           const batchBrands = await batchResultsResponse.json();
           allBrandProfiles = allBrandProfiles.concat(batchBrands);
         }
 
+        // Convert to DetectedBrand format
         const detectedBrands: DetectedBrand[] = allBrandProfiles.map(profile => ({
           handle: profile.username || profile.profileName || '',
           brandName: profile.fullName || profile.username || '',
@@ -380,6 +325,7 @@ export default function Home() {
 
         setBrands(detectedBrands);
 
+        // Save brands to database
         console.log('Saving brands to database:', detectedBrands.length);
         const brandsResponse = await fetch('/api/database/save-brands', {
           method: 'POST',
@@ -389,6 +335,7 @@ export default function Home() {
         const brandsResult = await brandsResponse.json();
         console.log('Brands save result:', brandsResult);
 
+        // Save partnerships to database
         console.log('Saving partnerships to database:', allPartnerships.length);
         const partnershipsResponse = await fetch('/api/database/save-partnerships', {
           method: 'POST',
@@ -403,7 +350,7 @@ export default function Home() {
       setStatus({
         stage: 'complete',
         progress: 100,
-        message: `Discovery complete! ${savedCount} creators saved.`,
+        message: 'Discovery complete!',
         stats: {
           postsFound: allPosts.length,
           uniqueHandles: uniqueCreatorHandles.length,
@@ -424,78 +371,10 @@ export default function Home() {
     }
   };
 
-  const testSaveLogic = async () => {
-    console.log('Starting fake data test...');
-    
-    const fakeCreators = Array.from({ length: 50 }, (_, i) => ({
-      handle: `test_creator_${i + 1}`,
-      fullName: `Test Creator ${i + 1}`,
-      bio: `This is a test bio for creator ${i + 1}. `.repeat(10),
-      followerCount: 50000 + Math.floor(Math.random() * 450000),
-      followingCount: Math.floor(Math.random() * 2000),
-      postsCount: Math.floor(Math.random() * 1000),
-      engagementRate: Math.round(Math.random() * 80) / 10,
-      isVerified: Math.random() > 0.9,
-      isBusinessAccount: Math.random() > 0.5,
-      categoryName: ['Fashion', 'Beauty', 'Lifestyle', 'Art'][Math.floor(Math.random() * 4)],
-      profileUrl: `https://instagram.com/test_creator_${i + 1}`,
-      website: '',
-    }));
-
-    const BATCH_SIZE = 3;
-    let saved = 0;
-    let failed = 0;
-
-    console.log(`Testing with ${fakeCreators.length} fake creators...`);
-
-    for (let i = 0; i < fakeCreators.length; i += BATCH_SIZE) {
-      const batch = fakeCreators.slice(i, i + BATCH_SIZE);
-      
-      console.log(`Saving batch ${Math.floor(i/BATCH_SIZE) + 1}...`);
-      
-      try {
-        const res = await fetch('/api/database/save-creators', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ creators: batch }),
-        });
-        
-        const result = await res.json();
-        
-        if (res.ok) {
-          saved += result.saved || 0;
-          failed += result.failed || 0;
-          console.log(`Batch ${Math.floor(i/BATCH_SIZE) + 1}: ${result.saved} saved, ${result.failed || 0} failed`);
-        } else {
-          console.error('Batch failed:', result);
-          failed += batch.length;
-        }
-      } catch (err) {
-        console.error('Batch error:', err);
-        failed += batch.length;
-      }
-
-      setStatus(prev => ({
-        ...prev,
-        stage: 'filtering',
-        message: `Test: ${saved} saved, ${failed} failed of ${fakeCreators.length}`,
-      }));
-    }
-
-    const message = `Test complete: ${saved} saved, ${failed} failed out of ${fakeCreators.length}`;
-    alert(message);
-    console.log(message);
-    
-    setStatus(prev => ({
-      ...prev,
-      stage: 'complete',
-      message: message,
-    }));
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto px-4 py-8">
+        {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">
             InfluenceAI Discovery
@@ -503,18 +382,29 @@ export default function Home() {
           <p className="text-slate-600">Discover Instagram creators and brand partnerships through hashtag analysis</p>
         </div>
 
+        {/* Navigation */}
         <div className="flex gap-2 mb-6">
-          <a href="/" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">
+        <a
+            href="/"
+            className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium"
+          >
             Discovery
           </a>
-          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+          <a
+            href="/database"
+            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+          >
             Creators
           </a>
-          <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+          <a
+            href="/brands"
+            className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors"
+          >
             Brands
           </a>
         </div>
 
+        {/* Tabs */}
         <div className="flex gap-4 mb-6">
           <button
             onClick={() => setActiveTab('setup')}
@@ -548,30 +438,9 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Content */}
         {activeTab === 'setup' && (
-          <div className="space-y-4">
-            <div className="bg-orange-50 border-2 border-orange-200 rounded-xl p-4">
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-orange-900 mb-1">🧪 Test Save Logic First</h3>
-                  <p className="text-sm text-orange-700">
-                    Test with 50 fake creators before running real discovery.
-                  </p>
-                </div>
-                <button
-                  onClick={testSaveLogic}
-                  className="px-6 py-3 bg-orange-600 text-white rounded-lg font-medium hover:bg-orange-700 transition-colors whitespace-nowrap"
-                >
-                  Run Test
-                </button>
-              </div>
-            </div>
-
-            <SetupPanel 
-              onStartDiscovery={startDiscovery} 
-              isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} 
-            />
-          </div>
+          <SetupPanel onStartDiscovery={startDiscovery} isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} />
         )}
 
         {activeTab === 'progress' && (

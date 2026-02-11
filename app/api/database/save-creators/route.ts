@@ -1,89 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import type { DiscoveredCreator } from '@/lib/types';
-
-interface SaveCreatorsRequest {
-  creators: DiscoveredCreator[];
-  runMetadata: {
-    hashtags: string[];
-    resultsPerHashtag: number;
-    minFollowers: number;
-    maxFollowers: number;
-    totalPostsFound: number;
-    uniqueHandlesFound: number;
-    profilesScraped: number;
-    creatorsInRange: number;
-  };
-}
 
 export async function POST(request: NextRequest) {
   try {
-    const body: SaveCreatorsRequest = await request.json();
-    const { creators, runMetadata } = body;
-
-    let newCount = 0;
-    let updatedCount = 0;
-
-    // Upsert each creator
-    for (const creator of creators) {
-      const { data, error } = await supabase.rpc('upsert_creator', {
-        p_instagram_handle: creator.handle,
-        p_full_name: creator.fullName,
-        p_bio: creator.bio,
-        p_follower_count: creator.followerCount,
-        p_following_count: creator.followingCount,
-        p_posts_count: creator.postsCount,
-        p_engagement_rate: creator.engagementRate,
-        p_is_verified: creator.isVerified,
-        p_is_business_account: creator.isBusinessAccount,
-        p_category_name: creator.categoryName,
-        p_profile_pic_url: creator.profilePicUrl,
-        p_profile_url: creator.profileUrl,
-        p_website: creator.website,
-        p_hashtags: runMetadata.hashtags,
-      });
-
-      if (error) {
-        console.error('Error upserting creator:', error);
-        continue;
-      }
-
-      if (data?.action === 'inserted') {
-        newCount++;
-      } else if (data?.action === 'updated') {
-        updatedCount++;
-      }
+    // Check payload size before parsing
+    const contentLength = request.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > 4000000) {
+      return NextResponse.json(
+        { error: 'Payload too large. Send fewer creators per batch.' },
+        { status: 413 }
+      );
     }
 
-    // Log the discovery run
-    const { error: runError } = await supabase.from('discovery_runs').insert({
-      hashtags: runMetadata.hashtags,
-      results_per_hashtag: runMetadata.resultsPerHashtag,
-      min_followers: runMetadata.minFollowers,
-      max_followers: runMetadata.maxFollowers,
-      total_posts_found: runMetadata.totalPostsFound,
-      unique_handles_found: runMetadata.uniqueHandlesFound,
-      profiles_scraped: runMetadata.profilesScraped,
-      creators_in_range: runMetadata.creatorsInRange,
-      new_creators_added: newCount,
-      existing_creators_updated: updatedCount,
-      status: 'completed',
-      completed_at: new Date().toISOString(),
-    });
+    const body = await request.json();
+    const { creators } = body;
 
-    if (runError) {
-      console.error('Error logging run:', runError);
+    if (!creators || !Array.isArray(creators) || creators.length === 0) {
+      return NextResponse.json(
+        { error: 'No creators provided' },
+        { status: 400 }
+      );
+    }
+
+    let saved = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    // Save each creator individually using the upsert function
+    for (const creator of creators) {
+      try {
+        const { data, error } = await supabase.rpc('upsert_creator', {
+          p_instagram_handle: creator.handle?.toLowerCase()?.replace(/^@/, '') || '',
+          p_full_name: creator.fullName || null,
+          p_bio: creator.bio || null,
+          p_follower_count: creator.followerCount || 0,
+          p_following_count: creator.followingCount || null,
+          p_posts_count: creator.postsCount || null,
+          p_engagement_rate: creator.engagementRate || null,
+          p_is_verified: creator.isVerified || false,
+          p_is_business_account: creator.isBusinessAccount || false,
+          p_category_name: creator.categoryName || null,
+          p_profile_pic_url: null, // Intentionally excluded to save space
+          p_profile_url: creator.profileUrl || null,
+          p_website: creator.website || null,
+          p_hashtags: creator.discoveredViaHashtags || [],
+        });
+
+        if (error) {
+          console.error(`Failed to save ${creator.handle}:`, error.message);
+          errors.push(`${creator.handle}: ${error.message}`);
+          failed++;
+        } else {
+          saved++;
+        }
+      } catch (err: any) {
+        console.error(`Error saving ${creator.handle}:`, err.message);
+        errors.push(`${creator.handle}: ${err.message}`);
+        failed++;
+      }
     }
 
     return NextResponse.json({
-      saved: creators.length,
-      new: newCount,
-      updated: updatedCount,
+      saved,
+      failed,
+      total: creators.length,
+      errors: errors.length > 0 ? errors.slice(0, 10) : undefined, // Only return first 10 errors
     });
-  } catch (error: any) {
-    console.error('Error saving creators:', error);
+
+  } catch (err: any) {
+    console.error('Save creators error:', err);
     return NextResponse.json(
-      { error: error.message || 'Failed to save creators' },
+      { error: err.message || 'Internal server error' },
       { status: 500 }
     );
   }
