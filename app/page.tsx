@@ -226,23 +226,29 @@ const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
       }));
 
       // Save creators to database
-      await fetch('/api/database/save-creators', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          creators: filteredCreators,
-          runMetadata: {
-            hashtags: config.hashtags,
-            resultsPerHashtag: config.resultsPerHashtag,
-            minFollowers: config.minFollowers,
-            maxFollowers: config.maxFollowers,
-            totalPostsFound: allPosts.length,
-            uniqueHandlesFound: uniqueCreatorHandles.length,
-            profilesScraped: allProfiles.length,
-            creatorsInRange: filteredCreators.length,
-          },
-        }),
-      });
+     // Save creators to database in batches
+     const creatorBatchSize = 20;
+     for (let i = 0; i < filteredCreators.length; i += creatorBatchSize) {
+       const batch = filteredCreators.slice(i, i + creatorBatchSize);
+  
+  await fetch('/api/database/save-creators', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      creators: batch,
+      runMetadata: i === 0 ? {
+        hashtags: config.hashtags,
+        resultsPerHashtag: config.resultsPerHashtag,
+        minFollowers: config.minFollowers,
+        maxFollowers: config.maxFollowers,
+        totalPostsFound: allPosts.length,
+        uniqueHandlesFound: uniqueCreatorHandles.length,
+        profilesScraped: allProfiles.length,
+        creatorsInRange: filteredCreators.length,
+      } : undefined,
+    }),
+  });
+}
 
       // Sponsorship mode: scrape and save brands
       if (config.mode === 'sponsorship' && detectedBrandHandles.size > 0) {
