@@ -19,17 +19,20 @@ export async function POST(request: NextRequest) {
     const body: SaveDiscoveryRunRequest = await request.json();
 
     const { error } = await supabase.from('discovery_runs').insert({
-      hashtags_searched: body.hashtags,
+      hashtags: body.hashtags,
       results_per_hashtag: body.resultsPerHashtag,
       min_followers: body.minFollowers,
       max_followers: body.maxFollowers,
-      posts_found: body.totalPostsFound,
-      unique_handles: body.uniqueHandlesFound,
+      total_posts_found: body.totalPostsFound,
+      unique_handles_found: body.uniqueHandlesFound,
       profiles_scraped: body.profilesScraped,
       creators_in_range: body.creatorsInRange,
       discovery_mode: body.mode || 'niche',
-      niche_keywords: body.nicheKeywords || null,
-      run_date: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      status: 'completed',
+      new_creators_added: 0,
+      existing_creators_updated: 0,
     });
 
     if (error) {
