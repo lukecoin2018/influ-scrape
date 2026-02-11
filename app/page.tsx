@@ -232,16 +232,16 @@ await fetch('/api/database/save-discovery-run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    hashtags: config.hashtags,
-    resultsPerHashtag: config.resultsPerHashtag,
-    minFollowers: config.minFollowers,
-    maxFollowers: config.maxFollowers,
+    hashtags: config?.hashtags || [],
+    resultsPerHashtag: config?.resultsPerHashtag || 0,
+    minFollowers: config?.minFollowers || 0,
+    maxFollowers: config?.maxFollowers || 0,
     totalPostsFound: allPosts.length,
     uniqueHandlesFound: uniqueCreatorHandles.length,
     profilesScraped: allProfiles.length,
     creatorsInRange: filteredCreators.length,
-    mode: config.mode,
-    nicheKeywords: config.nicheKeywords,
+    mode: config?.mode || 'niche',
+    nicheKeywords: config?.nicheKeywords || [],
   }),
 });
 
