@@ -227,26 +227,33 @@ const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
 
       // Save creators to database
      // Save creators to database in batches
-     const creatorBatchSize = 20;
-     for (let i = 0; i < filteredCreators.length; i += creatorBatchSize) {
-       const batch = filteredCreators.slice(i, i + creatorBatchSize);
+     // Save discovery run metadata (audit log)
+await fetch('/api/database/save-discovery-run', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    hashtags: config.hashtags,
+    resultsPerHashtag: config.resultsPerHashtag,
+    minFollowers: config.minFollowers,
+    maxFollowers: config.maxFollowers,
+    totalPostsFound: allPosts.length,
+    uniqueHandlesFound: uniqueCreatorHandles.length,
+    profilesScraped: allProfiles.length,
+    creatorsInRange: filteredCreators.length,
+    mode: config.mode,
+    nicheKeywords: config.nicheKeywords,
+  }),
+});
+
+// Save creators to database in batches
+const creatorBatchSize = 20;
+for (let i = 0; i < filteredCreators.length; i += creatorBatchSize) {
+  const batch = filteredCreators.slice(i, i + creatorBatchSize);
   
   await fetch('/api/database/save-creators', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      creators: batch,
-      runMetadata: i === 0 ? {
-        hashtags: config.hashtags,
-        resultsPerHashtag: config.resultsPerHashtag,
-        minFollowers: config.minFollowers,
-        maxFollowers: config.maxFollowers,
-        totalPostsFound: allPosts.length,
-        uniqueHandlesFound: uniqueCreatorHandles.length,
-        profilesScraped: allProfiles.length,
-        creatorsInRange: filteredCreators.length,
-      } : undefined,
-    }),
+    body: JSON.stringify({ creators: batch }),
   });
 }
 
