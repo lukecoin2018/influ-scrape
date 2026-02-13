@@ -27,6 +27,7 @@ function slimCreator(creator: any) {
     categoryName: creator.categoryName || '',
     profileUrl: creator.profileUrl || '',
     website: creator.website || '',
+    profilePicUrl: creator.profilePicUrl || '',
   };
 }
 
@@ -60,6 +61,7 @@ export default function ImportPage() {
       categoryName: profile.businessCategoryName || profile.categoryName || '',
       profileUrl: `https://instagram.com/${profile.username || profile.profileName}`,
       website: profile.externalUrl || profile.website || '',
+      profilePicUrl: profile.profilePicUrl || profile.profilePicHd || '',
     };
   };
 

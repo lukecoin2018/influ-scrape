@@ -22,6 +22,7 @@ function slimCreator(creator: DiscoveredCreator) {
     categoryName: creator.categoryName || '',
     profileUrl: creator.profileUrl || '',
     website: creator.website || '',
+    profilePicUrl: creator.profilePicUrl || '',
   };
 }
 

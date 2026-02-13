@@ -1,10 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import type { DiscoveredCreator } from '@/lib/types';
 
-type Platform = 'instagram' | 'tiktok';
-
-function slimInstagramCreator(creator: any) {
+function slimCreator(creator: any) {
   return {
     handle: creator.handle,
     fullName: creator.fullName || '',
@@ -14,50 +13,24 @@ function slimInstagramCreator(creator: any) {
     postsCount: creator.postsCount,
     engagementRate: creator.engagementRate,
     isVerified: creator.isVerified || false,
-    profilePicUrl: creator.profilePicUrl || '',
+    isBusinessAccount: creator.isBusinessAccount || false,
+    categoryName: creator.categoryName || '',
     profileUrl: creator.profileUrl || '',
     website: creator.website || '',
     discoveredViaHashtags: ['manual_entry'],
-    platformData: {
-      is_business_account: creator.isBusinessAccount || false,
-      category_name: creator.categoryName || null,
-    },
-  };
-}
-
-function mapTikTokProfile(profile: any) {
-  const handle = (profile.uniqueId || profile.authorMeta?.name || '').toLowerCase();
-  return {
-    handle,
-    fullName: profile.nickName || profile.authorMeta?.nickName || '',
-    bio: (profile.signature || profile.authorMeta?.signature || '').slice(0, 500),
-    followerCount: profile.fans || profile.authorMeta?.fans || profile.followerCount || 0,
-    followingCount: profile.following || profile.authorMeta?.following || 0,
-    postsCount: profile.video || profile.authorMeta?.video || 0,
-    engagementRate: profile.engagementRate || null,
-    isVerified: profile.verified || profile.authorMeta?.verified || false,
-    profilePicUrl: profile.avatarLarger || profile.authorMeta?.avatar || '',
-    profileUrl: `https://tiktok.com/@${handle}`,
-    website: profile.bioLink?.link || '',
-    discoveredViaHashtags: ['manual_entry'],
-    platformData: {
-      likes_count: profile.heart || profile.authorMeta?.heart || 0,
-      median_views: profile.medianViews || null,
-      video_count: profile.video || profile.authorMeta?.video || 0,
-      digg_count: profile.digg || 0,
-    },
+    profilePicUrl: creator.profilePicUrl || '',
   };
 }
 
 export default function AddByHandlePage() {
-  const [platform, setPlatform] = useState<Platform>('instagram');
   const [handlesInput, setHandlesInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState('');
-  const [creators, setCreators] = useState<any[]>([]);
+  const [creators, setCreators] = useState<DiscoveredCreator[]>([]);
   const [savedCount, setSavedCount] = useState(0);
 
   const processHandles = async () => {
+    // Clean and parse handles
     const handles = handlesInput
       .split('\n')
       .map(h => h.trim().toLowerCase().replace(/^@/, ''))
@@ -66,7 +39,7 @@ export default function AddByHandlePage() {
     const uniqueHandles = Array.from(new Set(handles));
 
     if (uniqueHandles.length === 0) {
-      alert('Please enter at least one handle');
+      alert('Please enter at least one Instagram handle');
       return;
     }
 
@@ -76,12 +49,8 @@ export default function AddByHandlePage() {
     setSavedCount(0);
 
     try {
-      // Start scrape using platform-specific route
-      const scrapeRoute = platform === 'instagram'
-        ? '/api/discover/start-profile-scrape'
-        : '/api/tiktok/start-profile-scrape';
-
-      const profileResponse = await fetch(scrapeRoute, {
+      // Scrape profiles using existing API
+      const profileResponse = await fetch('/api/discover/start-profile-scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ usernames: uniqueHandles }),
@@ -90,26 +59,29 @@ export default function AddByHandlePage() {
       const { runId } = await profileResponse.json();
 
       // Poll for completion
-      let complete = false;
-      let runStatus: any = null;
+      let profileComplete = false;
+      let profileRunStatus: any = null;
 
-      while (!complete) {
+      while (!profileComplete) {
         await new Promise(resolve => setTimeout(resolve, 3000));
-
+        
         const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
-        runStatus = await statusResponse.json();
+        profileRunStatus = await statusResponse.json();
 
-        if (runStatus.status === 'SUCCEEDED') {
-          complete = true;
-        } else if (runStatus.status === 'FAILED') {
+        if (profileRunStatus.status === 'SUCCEEDED') {
+          profileComplete = true;
+        } else if (profileRunStatus.status === 'FAILED') {
           throw new Error('Profile scraping failed');
         }
 
-        setProgress(`Scraping profiles... ${runStatus.status}`);
+        setProgress(`Scraping profiles... ${profileRunStatus.status}`);
       }
 
-      const datasetId = runStatus.datasetId;
-      if (!datasetId) throw new Error('No dataset ID returned from scraper');
+      // Fetch results
+      const datasetId = profileRunStatus.datasetId;
+      if (!datasetId) {
+        throw new Error('No dataset ID returned from profile scraper');
+      }
 
       const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
       const profiles = await resultsResponse.json();
@@ -117,35 +89,30 @@ export default function AddByHandlePage() {
       setProgress(`Found ${profiles.length} profiles. Mapping data...`);
 
       // Map to creator format
-      let mappedCreators: any[];
-      if (platform === 'instagram') {
-        const { mapProfileToCreator } = await import('@/lib/apify');
-        mappedCreators = profiles.map((p: any) => {
-          const creator = mapProfileToCreator(p);
-          return slimInstagramCreator(creator);
-        });
-      } else {
-        mappedCreators = profiles.map(mapTikTokProfile);
-      }
-
+      const { mapProfileToCreator } = await import('@/lib/apify');
+      const mappedCreators = profiles.map(mapProfileToCreator);
+      
       setCreators(mappedCreators);
 
       // Save to database
       setProgress('Saving to database...');
+      
       const BATCH_SIZE = 3;
       let saved = 0;
       let failed = 0;
 
-      for (let i = 0; i < mappedCreators.length; i += BATCH_SIZE) {
-        const batch = mappedCreators.slice(i, i + BATCH_SIZE);
+      const slimmedCreators = mappedCreators.map(slimCreator);
 
+      for (let i = 0; i < slimmedCreators.length; i += BATCH_SIZE) {
+        const batch = slimmedCreators.slice(i, i + BATCH_SIZE);
+        
         try {
           const response = await fetch('/api/database/save-creators', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ creators: batch, platform }),
+            body: JSON.stringify({ creators: batch }),
           });
-
+          
           if (response.ok) {
             const result = await response.json();
             saved += result.saved || 0;
@@ -155,16 +122,16 @@ export default function AddByHandlePage() {
             failed += batch.length;
           }
         } catch (err) {
-          console.error(`Batch error:`, err);
+          console.error(`Batch ${Math.floor(i/BATCH_SIZE) + 1} error:`, err);
           failed += batch.length;
         }
 
-        setProgress(`Saving... ${saved} saved, ${failed} failed of ${mappedCreators.length}`);
+        setProgress(`Saving... ${saved} saved, ${failed} failed of ${slimmedCreators.length}`);
         await new Promise(r => setTimeout(r, 200));
       }
 
       setSavedCount(saved);
-      setProgress(`Complete! ${saved} creators saved.${failed > 0 ? ` ${failed} failed.` : ''}`);
+      setProgress(`Complete! ${saved} creators saved to database.${failed > 0 ? ` ${failed} failed.` : ''}`);
 
     } catch (error: any) {
       setProgress(`Error: ${error.message}`);
@@ -181,56 +148,38 @@ export default function AddByHandlePage() {
           <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">
             Add Creators by Handle
           </h1>
-          <p className="text-slate-600">Manually add creators you find while browsing</p>
+          <p className="text-slate-600">Manually add Instagram creators you find while browsing</p>
         </div>
 
         <div className="flex gap-2 mb-6">
-          <a href="/" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Discovery</a>
-          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Creators</a>
-          <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Brands</a>
-          <a href="/import" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Import</a>
-          <a href="/add" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">Add Creators</a>
+          <a href="/" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Discovery
+          </a>
+          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Creators
+          </a>
+          <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Brands
+          </a>
+          <a href="/import" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Import
+          </a>
+          <a href="/add" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">
+            Add Creators
+          </a>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8 mb-6">
-          {/* Platform Toggle */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Platform</label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => setPlatform('instagram')}
-                className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
-                  platform === 'instagram'
-                    ? 'bg-pink-50 border-pink-500 text-pink-700'
-                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                }`}
-              >
-                📸 Instagram
-              </button>
-              <button
-                onClick={() => setPlatform('tiktok')}
-                className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
-                  platform === 'tiktok'
-                    ? 'bg-black border-black text-white'
-                    : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                }`}
-              >
-                🎵 TikTok
-              </button>
-            </div>
-          </div>
+          <h2 className="text-2xl font-bold text-slate-800 mb-4">Enter Instagram Handles</h2>
 
           <div className="mb-6">
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              {platform === 'instagram' ? 'Instagram' : 'TikTok'} Handles (one per line)
+              Instagram Handles (one per line)
             </label>
             <textarea
               value={handlesInput}
               onChange={(e) => setHandlesInput(e.target.value)}
-              placeholder={platform === 'instagram'
-                ? '@fashionista\nstyleinfluencer\n@beautyblogger'
-                : '@tiktokcreator\ndancequeen\n@foodie'
-              }
+              placeholder="@fashionista&#10;styleinfluencer&#10;@beautyblogger"
               rows={8}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent font-mono text-sm"
               disabled={isProcessing}
@@ -270,15 +219,16 @@ export default function AddByHandlePage() {
                     <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700">Name</th>
                     <th className="text-right py-3 px-4 text-sm font-semibold text-slate-700">Followers</th>
                     <th className="text-right py-3 px-4 text-sm font-semibold text-slate-700">Engagement</th>
+                    <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700">Category</th>
                   </tr>
                 </thead>
                 <tbody>
                   {creators.map((creator, i) => (
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="py-3 px-4">
-                        <a
-                          href={creator.profileUrl}
-                          target="_blank"
+                        <a 
+                          href={creator.profileUrl} 
+                          target="_blank" 
                           rel="noopener noreferrer"
                           className="text-violet-600 hover:text-violet-800 font-medium"
                         >
@@ -287,11 +237,12 @@ export default function AddByHandlePage() {
                       </td>
                       <td className="py-3 px-4 text-slate-700">{creator.fullName}</td>
                       <td className="py-3 px-4 text-right text-slate-700">
-                        {creator.followerCount?.toLocaleString()}
+                        {creator.followerCount.toLocaleString()}
                       </td>
                       <td className="py-3 px-4 text-right text-slate-700">
                         {creator.engagementRate ? `${creator.engagementRate.toFixed(2)}%` : '-'}
                       </td>
+                      <td className="py-3 px-4 text-slate-700">{creator.categoryName || '-'}</td>
                     </tr>
                   ))}
                 </tbody>
