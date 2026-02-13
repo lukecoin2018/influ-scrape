@@ -125,7 +125,13 @@ export default function AddByHandlePage() {
           return slimInstagramCreator(creator);
         });
       } else {
-        mappedCreators = profiles.map(mapTikTokProfile);
+        const allMapped = profiles.map(mapTikTokProfile);
+        const seen = new Set<string>();
+        mappedCreators = allMapped.filter((c: any) => {
+          if (!c.handle || seen.has(c.handle)) return false;
+          seen.add(c.handle);
+          return true;
+        });
       }
 
       setCreators(mappedCreators);
