@@ -8,8 +8,6 @@ import BrandsTable from '@/components/BrandsTable';
 import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, DetectedBrand, Partnership, SponsorshipStats } from '@/lib/types';
 import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from '@/lib/brandDetection';
 
-type Platform = 'instagram' | 'tiktok';
-
 function slimCreator(creator: DiscoveredCreator) {
   return {
     handle: creator.handle,
@@ -25,15 +23,10 @@ function slimCreator(creator: DiscoveredCreator) {
     profileUrl: creator.profileUrl || '',
     website: creator.website || '',
     profilePicUrl: creator.profilePicUrl || '',
-    platformData: {
-      is_business_account: creator.isBusinessAccount || false,
-      category_name: creator.categoryName || null,
-    },
   };
 }
 
 export default function Home() {
-  const [platform, setPlatform] = useState<Platform>('instagram');
   const [activeTab, setActiveTab] = useState<'setup' | 'progress' | 'results'>('setup');
   const [resultsTab, setResultsTab] = useState<'creators' | 'brands'>('creators');
   const [status, setStatus] = useState<PipelineStatus>({
@@ -76,11 +69,7 @@ export default function Home() {
         stats: { postsFound: 0, uniqueHandles: 0, profilesScraped: 0, creatorsInRange: 0 },
       });
 
-      const hashtagRoute = platform === 'instagram'
-        ? '/api/discover/start-hashtag-scrape'
-        : '/api/tiktok/start-hashtag-scrape';
-
-      const hashtagResponse = await fetch(hashtagRoute, {
+      const hashtagResponse = await fetch('/api/discover/start-hashtag-scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -114,6 +103,7 @@ export default function Home() {
         }));
       }
 
+      // Fetch hashtag results using datasetId from run status
       const datasetId = hashtagRunStatus.datasetId;
       if (!datasetId) {
         throw new Error('No dataset ID returned from hashtag scraper');
@@ -121,15 +111,17 @@ export default function Home() {
       const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
       let allPosts = await resultsResponse.json();
 
-      // Sponsorship mode: filter by niche and detect brands (Instagram only)
+      // Sponsorship mode: filter by niche and detect brands
       let allPartnerships: Partnership[] = [];
       let detectedBrandHandles = new Set<string>();
 
-      if (platform === 'instagram' && config.mode === 'sponsorship') {
+      if (config.mode === 'sponsorship') {
+        // Filter posts by niche keywords
         if (config.nicheKeywords && config.nicheKeywords.length > 0) {
           allPosts = filterPostsByNiche(allPosts, config.nicheKeywords);
         }
 
+        // Detect brands in each post
         allPosts.forEach((post: any) => {
           const brandDetection = detectBrandsInPost(post);
           
@@ -151,12 +143,7 @@ export default function Home() {
         });
       }
 
-      // For TikTok, ownerUsername field may differ
-      const handleField = platform === 'instagram' ? 'ownerUsername' : 'authorMeta.name';
-      const uniqueCreatorHandles = Array.from(new Set(
-        allPosts.map((p: any) => p.ownerUsername || p.authorMeta?.name || p.uniqueId || '')
-          .filter(Boolean)
-      ));
+      const uniqueCreatorHandles = Array.from(new Set(allPosts.map((p: any) => p.ownerUsername)));
 
       setStatus(prev => ({
         ...prev,
@@ -172,10 +159,6 @@ export default function Home() {
       // Stage 2: Scrape creator profiles
       setStatus(prev => ({ ...prev, stage: 'profiles', progress: 40, message: 'Scraping creator profiles...' }));
 
-      const profileRoute = platform === 'instagram'
-        ? '/api/discover/start-profile-scrape'
-        : '/api/tiktok/start-profile-scrape';
-
       const batchSize = 50;
       const batches = [];
       for (let i = 0; i < uniqueCreatorHandles.length; i += batchSize) {
@@ -187,7 +170,7 @@ export default function Home() {
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
         
-        const profileResponse = await fetch(profileRoute, {
+        const profileResponse = await fetch('/api/discover/start-profile-scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ usernames: batch }),
@@ -261,11 +244,13 @@ export default function Home() {
       }));
 
       // === SAVE RESULTS TO DATABASE ===
+      
+      // Track save progress
       let savedCount = 0;
       let failedCount = 0;
       const BATCH_SIZE = 3;
 
-      // 1. Save discovery run metadata
+      // 1. Save discovery run metadata FIRST
       try {
         const runMetaResponse = await fetch('/api/database/save-discovery-run', {
           method: 'POST',
@@ -299,7 +284,7 @@ export default function Home() {
           const response = await fetch('/api/database/save-creators', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ creators: batch, platform }),
+            body: JSON.stringify({ creators: batch }),
           });
           
           if (response.ok) {
@@ -323,8 +308,14 @@ export default function Home() {
         await new Promise(r => setTimeout(r, 200));
       }
 
-      // Sponsorship mode: scrape and save brands (Instagram only)
-      if (platform === 'instagram' && config.mode === 'sponsorship' && detectedBrandHandles.size > 0) {
+      setStatus(prev => ({
+        ...prev,
+        stage: 'complete',
+        message: `Done! ${savedCount} creators saved to database.${failedCount > 0 ? ` ${failedCount} failed.` : ''}`,
+      }));
+
+      // Sponsorship mode: scrape and save brands
+      if (config.mode === 'sponsorship' && detectedBrandHandles.size > 0) {
         setStatus(prev => ({
           ...prev,
           progress: 92,
@@ -390,6 +381,7 @@ export default function Home() {
 
         setBrands(detectedBrands);
 
+        console.log('Saving brands to database:', detectedBrands.length);
         const brandsResponse = await fetch('/api/database/save-brands', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -398,6 +390,7 @@ export default function Home() {
         const brandsResult = await brandsResponse.json();
         console.log('Brands save result:', brandsResult);
 
+        console.log('Saving partnerships to database:', allPartnerships.length);
         const partnershipsResponse = await fetch('/api/database/save-partnerships', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -407,10 +400,11 @@ export default function Home() {
         console.log('Partnerships save result:', partnershipsResult);
       }
 
+      // Complete
       setStatus({
         stage: 'complete',
         progress: 100,
-        message: `Discovery complete! ${savedCount} creators saved.${failedCount > 0 ? ` ${failedCount} failed.` : ''}`,
+        message: `Discovery complete! ${savedCount} creators saved.`,
         stats: {
           postsFound: allPosts.length,
           uniqueHandles: uniqueCreatorHandles.length,
@@ -431,6 +425,75 @@ export default function Home() {
     }
   };
 
+  const testSaveLogic = async () => {
+    console.log('Starting fake data test...');
+    
+    const fakeCreators = Array.from({ length: 50 }, (_, i) => ({
+      handle: `test_creator_${i + 1}`,
+      fullName: `Test Creator ${i + 1}`,
+      bio: `This is a test bio for creator ${i + 1}. `.repeat(10),
+      followerCount: 50000 + Math.floor(Math.random() * 450000),
+      followingCount: Math.floor(Math.random() * 2000),
+      postsCount: Math.floor(Math.random() * 1000),
+      engagementRate: Math.round(Math.random() * 80) / 10,
+      isVerified: Math.random() > 0.9,
+      isBusinessAccount: Math.random() > 0.5,
+      categoryName: ['Fashion', 'Beauty', 'Lifestyle', 'Art'][Math.floor(Math.random() * 4)],
+      profileUrl: `https://instagram.com/test_creator_${i + 1}`,
+      website: '',
+    }));
+
+    const BATCH_SIZE = 3;
+    let saved = 0;
+    let failed = 0;
+
+    console.log(`Testing with ${fakeCreators.length} fake creators...`);
+
+    for (let i = 0; i < fakeCreators.length; i += BATCH_SIZE) {
+      const batch = fakeCreators.slice(i, i + BATCH_SIZE);
+      
+      console.log(`Saving batch ${Math.floor(i/BATCH_SIZE) + 1}...`);
+      
+      try {
+        const res = await fetch('/api/database/save-creators', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ creators: batch }),
+        });
+        
+        const result = await res.json();
+        
+        if (res.ok) {
+          saved += result.saved || 0;
+          failed += result.failed || 0;
+          console.log(`Batch ${Math.floor(i/BATCH_SIZE) + 1}: ${result.saved} saved, ${result.failed || 0} failed`);
+        } else {
+          console.error('Batch failed:', result);
+          failed += batch.length;
+        }
+      } catch (err) {
+        console.error('Batch error:', err);
+        failed += batch.length;
+      }
+
+      setStatus(prev => ({
+        ...prev,
+        stage: 'filtering',
+        message: `Test: ${saved} saved, ${failed} failed of ${fakeCreators.length}`,
+      }));
+    }
+
+    const message = `Test complete: ${saved} saved, ${failed} failed out of ${fakeCreators.length}`;
+    alert(message);
+    console.log(message);
+    
+    setStatus(prev => ({
+      ...prev,
+      stage: 'complete',
+      message: message,
+    }));
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto px-4 py-8">
@@ -438,22 +501,31 @@ export default function Home() {
           <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-600 to-purple-600 bg-clip-text text-transparent mb-2">
             InfluenceAI Discovery
           </h1>
-          <p className="text-slate-600">Discover creators and brand partnerships through hashtag analysis</p>
+          <p className="text-slate-600">Discover Instagram creators and brand partnerships through hashtag analysis</p>
         </div>
 
         <div className="flex gap-2 mb-6">
-          <a href="/" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">Discovery</a>
-          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Creators</a>
-          <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Brands</a>
-          <a href="/import" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Import</a>
-          <a href="/add" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Add Creators</a>
+          <a href="/" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">
+            Discovery
+          </a>
+          <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Creators
+          </a>
+          <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Brands
+          </a>
+          <a href="/add" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">
+            Add Creators
+          </a>
         </div>
 
         <div className="flex gap-4 mb-6">
           <button
             onClick={() => setActiveTab('setup')}
             className={`px-6 py-3 rounded-lg font-medium transition-all ${
-              activeTab === 'setup' ? 'bg-white text-violet-600 shadow-md' : 'text-slate-600 hover:text-slate-900'
+              activeTab === 'setup'
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Setup
@@ -461,7 +533,9 @@ export default function Home() {
           <button
             onClick={() => setActiveTab('progress')}
             className={`px-6 py-3 rounded-lg font-medium transition-all ${
-              activeTab === 'progress' ? 'bg-white text-violet-600 shadow-md' : 'text-slate-600 hover:text-slate-900'
+              activeTab === 'progress'
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Progress
@@ -469,7 +543,9 @@ export default function Home() {
           <button
             onClick={() => setActiveTab('results')}
             className={`px-6 py-3 rounded-lg font-medium transition-all ${
-              activeTab === 'results' ? 'bg-white text-violet-600 shadow-md' : 'text-slate-600 hover:text-slate-900'
+              activeTab === 'results'
+                ? 'bg-white text-violet-600 shadow-md'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Results ({creators.length})
@@ -477,45 +553,11 @@ export default function Home() {
         </div>
 
         {activeTab === 'setup' && (
-          <div className="space-y-4">
-            {/* Platform Toggle */}
-            <div className="bg-white rounded-xl shadow-sm p-6">
-              <label className="block text-sm font-medium text-slate-700 mb-3">Platform</label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setPlatform('instagram')}
-                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
-                    platform === 'instagram'
-                      ? 'bg-pink-50 border-pink-500 text-pink-700'
-                      : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                  }`}
-                >
-                  📸 Instagram
-                </button>
-                <button
-                  onClick={() => setPlatform('tiktok')}
-                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
-                    platform === 'tiktok'
-                      ? 'bg-black border-black text-white'
-                      : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                  }`}
-                >
-                  🎵 TikTok
-                </button>
-              </div>
-              {platform === 'tiktok' && (
-                <p className="text-xs text-slate-500 mt-2">
-                  Note: TikTok sponsorship discovery is not available. Niche discovery only.
-                </p>
-              )}
-            </div>
-
-            <SetupPanel
-              onStartDiscovery={startDiscovery}
-              isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'}
-            />
-          </div>
-        )}
+  <SetupPanel 
+    onStartDiscovery={startDiscovery} 
+    isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'} 
+  />
+)}
 
         {activeTab === 'progress' && (
           <ProgressPanel status={status} mode={discoveryConfig?.mode || 'niche'} sponsorshipStats={sponsorshipStats} />
@@ -523,12 +565,14 @@ export default function Home() {
 
         {activeTab === 'results' && (
           <>
-            {discoveryConfig?.mode === 'sponsorship' && platform === 'instagram' && (
+            {discoveryConfig?.mode === 'sponsorship' && (
               <div className="flex gap-2 mb-6">
                 <button
                   onClick={() => setResultsTab('creators')}
                   className={`px-6 py-3 rounded-lg font-medium transition-all ${
-                    resultsTab === 'creators' ? 'bg-white text-violet-600 shadow-md' : 'text-slate-600 hover:text-slate-900'
+                    resultsTab === 'creators'
+                      ? 'bg-white text-violet-600 shadow-md'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   Creators ({creators.length})
@@ -536,7 +580,9 @@ export default function Home() {
                 <button
                   onClick={() => setResultsTab('brands')}
                   className={`px-6 py-3 rounded-lg font-medium transition-all ${
-                    resultsTab === 'brands' ? 'bg-white text-violet-600 shadow-md' : 'text-slate-600 hover:text-slate-900'
+                    resultsTab === 'brands'
+                      ? 'bg-white text-violet-600 shadow-md'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   Brands Detected ({brands.length})
