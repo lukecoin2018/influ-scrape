@@ -15,12 +15,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Clean handles — remove @ if present
-    const cleanUsernames = usernames.map((u: string) => u.replace(/^@/, ''));
-
-    const actorId = 'abe~tiktok-profile-scraper';
+    const actorId = 'clockworks~tiktok-profile-scraper';
     const input = {
-      usernames: cleanUsernames,
+      profiles: usernames.map((u: string) => `https://www.tiktok.com/@${u}`),
+      proxyConfiguration: { useApifyProxy: true },
     };
 
     const response = await fetch(

@@ -31,6 +31,27 @@ function slimCreator(creator: DiscoveredCreator) {
     },
   };
 }
+function mapTikTokProfile(profile: any) {
+  const handle = (profile.username || '').toLowerCase();
+  return {
+    handle,
+    fullName: profile.displayName || '',
+    bio: (profile.bio || '').slice(0, 500),
+    followerCount: profile.followers || 0,
+    followingCount: profile.following || 0,
+    postsCount: profile.videos || 0,
+    engagementRate: null,
+    isVerified: false,
+    profilePicUrl: profile.profileImage || '',
+    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
+    website: '',
+    platformData: {
+      likes_count: profile.likes || 0,
+      video_count: profile.videos || 0,
+      tagline: profile.tagline || '',
+    },
+  };
+}
 
 export default function Home() {
   const [platform, setPlatform] = useState<Platform>('instagram');
@@ -243,7 +264,7 @@ export default function Home() {
 
       const { mapProfileToCreator } = await import('@/lib/apify');
       const filteredCreators = (allProfiles as any[])
-        .map(mapProfileToCreator)
+      .map((p: any) => platform === 'tiktok' ? mapTikTokProfile(p) : mapProfileToCreator(p))
         .filter(creator => {
           return (
             creator.followerCount >= config.minFollowers &&
@@ -251,7 +272,7 @@ export default function Home() {
           );
         });
 
-      setCreators(filteredCreators);
+        setCreators(filteredCreators as any[]);
 
       setStatus(prev => ({
         ...prev,
@@ -290,7 +311,7 @@ export default function Home() {
       }
 
       // 2. Save creators in small batches
-      const slimmedCreators = filteredCreators.map(slimCreator);
+      const slimmedCreators = filteredCreators.map((c: any) => slimCreator(c));
 
       for (let i = 0; i < slimmedCreators.length; i += BATCH_SIZE) {
         const batch = slimmedCreators.slice(i, i + BATCH_SIZE);

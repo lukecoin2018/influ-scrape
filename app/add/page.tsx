@@ -26,25 +26,24 @@ function slimInstagramCreator(creator: any) {
 }
 
 function mapTikTokProfile(profile: any) {
-  const handle = (profile.uniqueId || profile.authorMeta?.name || '').toLowerCase();
+  const handle = (profile.username || '').toLowerCase();
   return {
     handle,
-    fullName: profile.nickName || profile.authorMeta?.nickName || '',
-    bio: (profile.signature || profile.authorMeta?.signature || '').slice(0, 500),
-    followerCount: profile.fans || profile.authorMeta?.fans || profile.followerCount || 0,
-    followingCount: profile.following || profile.authorMeta?.following || 0,
-    postsCount: profile.video || profile.authorMeta?.video || 0,
-    engagementRate: profile.engagementRate || null,
-    isVerified: profile.verified || profile.authorMeta?.verified || false,
-    profilePicUrl: profile.avatarLarger || profile.authorMeta?.avatar || '',
-    profileUrl: `https://tiktok.com/@${handle}`,
-    website: profile.bioLink?.link || '',
+    fullName: profile.displayName || '',
+    bio: (profile.bio || '').slice(0, 500),
+    followerCount: profile.followers || 0,
+    followingCount: profile.following || 0,
+    postsCount: profile.videos || 0,
+    engagementRate: null,
+    isVerified: false,
+    profilePicUrl: profile.profileImage || '',
+    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
+    website: '',
     discoveredViaHashtags: ['manual_entry'],
     platformData: {
-      likes_count: profile.heart || profile.authorMeta?.heart || 0,
-      median_views: profile.medianViews || null,
-      video_count: profile.video || profile.authorMeta?.video || 0,
-      digg_count: profile.digg || 0,
+      likes_count: profile.likes || 0,
+      video_count: profile.videos || 0,
+      tagline: profile.tagline || '',
     },
   };
 }
