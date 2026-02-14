@@ -25,7 +25,7 @@ function slimCreator(creator: DiscoveredCreator) {
     profileUrl: creator.profileUrl || '',
     website: creator.website || '',
     profilePicUrl: creator.profilePicUrl || '',
-    platformData: {
+    platformData: (creator as any).platformData || {
       is_business_account: creator.isBusinessAccount || false,
       category_name: creator.categoryName || null,
     },
@@ -46,8 +46,8 @@ function mapTikTokProfile(profile: any) {
     profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
     website: '',
     platformData: {
-      likes_count: profile.likes?.raw || profile.likes || 0,
-      video_count: profile.videos?.raw || profile.videos || 0,
+      likes_count: profile['likes.raw'] || profile.likes?.raw || profile.likes_raw || profile.likes || 0,
+      video_count: profile['videos.raw'] || profile.videos?.raw || profile.videos_raw || profile.videos || 0,
       tagline: profile.tagline || '',
     },
   };
