@@ -223,19 +223,43 @@ ${context.join('\n')}
 
 Write ONLY the summary, no preamble, no labels, no quotes.`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  const callClaude = async (promptText: string): Promise<Response> => {
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: promptText }],
+      }),
+    });
+  };
+
+  let response = await callClaude(prompt);
+
+  // If prompt too large (400), retry with trimmed context (captions shortened, fewer included)
+  if (response.status === 400) {
+    const trimmedContext = context.map(line => {
+      if (line.startsWith('Caption')) return line.slice(0, line.indexOf(':') + 152); // ~150 chars per caption
+      if (line.startsWith('Bio:')) return line.slice(0, 160); // ~150 chars of bio
+      return line;
+    }).slice(0, 12); // cap total context lines
+
+    const trimmedPrompt = `You are an influencer marketing analyst. Based on the following creator data, write a concise 3-4 sentence summary of this creator for a brand considering a partnership. Describe what they create, their style/tone, what kind of brands would be a good fit, and any notable strengths or signals.
+
+Be specific and useful — don't be generic. Reference actual data points. Write in third person.
+
+CREATOR DATA:
+${trimmedContext.join('\n')}
+
+Write ONLY the summary, no preamble, no labels, no quotes.`;
+
+    response = await callClaude(trimmedPrompt);
+  }
 
   if (!response.ok) {
     throw new Error(`Claude API error: ${response.status}`);
