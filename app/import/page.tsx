@@ -210,6 +210,7 @@ export default function ImportPage() {
             Add Creators
           </a>
           <a href="/enrich" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Enrich</a>
+          <a href="/intelligence" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Intelligence</a>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8 mb-6">
