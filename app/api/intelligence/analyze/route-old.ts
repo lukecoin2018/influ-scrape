@@ -367,22 +367,15 @@ export async function POST(request: Request) {
       const website = extractWebsite(bio);
 
       let aiSummary: string | null = null;
-      let aiSkipped = false;
       if (doAI) {
-        try {
-          aiSummary = await generateAISummary(
-            profile,
-            enrichment,
-            captions,
-            bio,
-            location,
-            language.primary
-          );
-        } catch (err) {
-          aiSkipped = true;
-          console.error(`AI summary failed for ${profile.handle}:`, err instanceof Error ? err.message : err);
-          // Save everything else, leave ai_summary as null so it gets picked up next run
-        }
+        aiSummary = await generateAISummary(
+          profile,
+          enrichment,
+          captions,
+          bio,
+          location,
+          language.primary
+        );
       }
 
       await saveIntelligence(profile.id, profile.creator_id as string, {
@@ -402,7 +395,6 @@ export async function POST(request: Request) {
         email: emails[0] || null,
         website,
         aiSummary: !!aiSummary,
-        ...(aiSkipped && { error: 'AI summary skipped (will retry next run)' }),
       });
     } catch (err) {
       console.error(`Error processing ${profile.handle}:`, err);
