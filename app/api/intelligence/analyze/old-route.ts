@@ -316,8 +316,6 @@ export async function POST(request: Request) {
       .is('intelligence_updated_at', null)
       .not('enrichment_data', 'is', null)
       .order('id');
-  } else if (mode === 'missing_ai_summary') {
-    query = query.is('ai_summary', null);
   } else if (mode === 'specific' && handles.length > 0) {
     query = query.in('handle', handles);
   }

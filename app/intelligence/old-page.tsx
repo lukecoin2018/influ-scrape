@@ -35,7 +35,7 @@ export default function IntelligencePage() {
   const [loadingStatus, setLoadingStatus] = useState(true);
 
   // Options
-  const [mode, setMode] = useState<'not_analyzed' | 'enriched_first' | 're_analyze_all' | 'missing_ai_summary' | 'specific'>('not_analyzed');
+  const [mode, setMode] = useState<'not_analyzed' | 'enriched_first' | 're_analyze_all' | 'specific'>('not_analyzed');
   const [batchSize, setBatchSize] = useState(50);
   const [doEmails, setDoEmails] = useState(true);
   const [doLanguage, setDoLanguage] = useState(true);
@@ -200,7 +200,6 @@ export default function IntelligencePage() {
                   {[
                     { value: 'not_analyzed', label: 'Not yet analyzed' },
                     { value: 'enriched_first', label: 'Enriched creators first' },
-                    { value: 'missing_ai_summary', label: 'Missing AI summary' },
                     { value: 're_analyze_all', label: 'Re-analyze all' },
                     { value: 'specific', label: 'Specific creators' },
                   ].map(({ value, label }) => (
