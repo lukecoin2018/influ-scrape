@@ -245,6 +245,11 @@ export async function POST(request: NextRequest) {
         const text = await buildEmbeddingText(creator.id);
 
         if (text.length < 50) {
+          // Mark as ai_embedded anyway so it doesn't keep appearing
+          await supabase
+            .from('creators')
+            .update({ ai_embedded: true })
+            .eq('id', creator.id);
           results.push({ handle: creator.handle, status: 'skipped', reason: 'insufficient data' });
           continue;
         }
