@@ -13,16 +13,21 @@ function formatNumber(num: number): string {
 }
 
 async function buildEmbeddingText(creatorId: string): Promise<string> {
-  const { data: creator } = await supabase
+  const { data: creator, error: creatorError } = await supabase
     .from('creators')
     .select('display_name, content_tags')
     .eq('id', creatorId)
     .single();
 
-  const { data: profiles } = await supabase
+  if (creatorError) console.error(`Creator lookup error for ${creatorId}:`, creatorError.message);
+
+  const { data: profiles, error: profilesError } = await supabase
     .from('social_profiles')
     .select('platform, handle, bio, follower_count, engagement_rate, platform_data, enrichment_data, ai_summary, detected_language, detected_country, detected_city')
     .eq('creator_id', creatorId);
+
+  if (profilesError) console.error(`Profiles lookup error for ${creatorId}:`, profilesError.message);
+  console.log(`buildEmbeddingText: creatorId=${creatorId}, creator=${JSON.stringify(creator)}, profiles count=${profiles?.length ?? 0}`);
 
   const parts: string[] = [];
   const name = creator?.display_name || 'Unknown creator';
@@ -161,21 +166,25 @@ export async function POST(request: NextRequest) {
         }
       }
     } else if (mode === 'has_ai_summary') {
-      // Re-embed creators that have an AI summary — these get much richer embeddings
-      // Query social_profiles directly for handles + creator_ids where ai_summary exists,
-      // limited to batchSize to avoid the .in() query size limit issue
+      // Re-embed creators where embedded_at < intelligence_updated_at
+      // meaning they were embedded before intelligence ran and need a richer re-embed
       const { data: profiles } = await supabase
         .from('social_profiles')
-        .select('creator_id, handle')
+        .select('creator_id, handle, intelligence_updated_at, creators!inner(embedded_at)')
         .not('ai_summary', 'is', null)
         .not('creator_id', 'is', null)
-        .limit(batchSize);
+        .not('intelligence_updated_at', 'is', null)
+        .limit(batchSize * 3); // fetch extra to account for deduplication
 
       const seen = new Set<string>();
       for (const p of profiles || []) {
-        if (!seen.has(p.creator_id) && p.handle) {
+        if (seen.has(p.creator_id) || !p.handle) continue;
+        const embeddedAt = (p as any).creators?.embedded_at;
+        // Include if never embedded, or embedded before intelligence ran
+        if (!embeddedAt || new Date(embeddedAt) < new Date(p.intelligence_updated_at)) {
           seen.add(p.creator_id);
           creatorIds.push({ id: p.creator_id, handle: p.handle });
+          if (creatorIds.length >= batchSize) break;
         }
       }
     } else if (mode === 'enriched_first') {

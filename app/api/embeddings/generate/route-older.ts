@@ -21,7 +21,7 @@ async function buildEmbeddingText(creatorId: string): Promise<string> {
 
   const { data: profiles } = await supabase
     .from('social_profiles')
-    .select('platform, handle, bio, follower_count, engagement_rate, platform_data, enrichment_data')
+    .select('platform, handle, bio, follower_count, engagement_rate, platform_data, enrichment_data, ai_summary, detected_language, detected_country, detected_city')
     .eq('creator_id', creatorId);
 
   const parts: string[] = [];
@@ -48,6 +48,18 @@ async function buildEmbeddingText(creatorId: string): Promise<string> {
     if (category && category !== 'null' && !String(category).startsWith('None')) {
       parts.push(`Category: ${category}.`);
     }
+
+    // --- Intelligence layer data ---
+    if (profile.detected_language) {
+      parts.push(`Primary language: ${profile.detected_language}.`);
+    }
+    if (profile.detected_country) {
+      parts.push(`Location: ${profile.detected_city ? `${profile.detected_city}, ` : ''}${profile.detected_country}.`);
+    }
+    if (profile.ai_summary) {
+      parts.push(`About: ${profile.ai_summary}`);
+    }
+    // --- End intelligence layer ---
 
     const enrichment = profile.enrichment_data;
     if (enrichment && Object.keys(enrichment).length > 0) {
@@ -129,7 +141,6 @@ export async function POST(request: NextRequest) {
   try {
     const { mode, batchSize = 50, handles = [] } = await request.json();
 
-    // Get creator IDs to embed
     let creatorIds: { id: string; handle: string }[] = [];
 
     if (mode === 'specific') {
@@ -145,6 +156,24 @@ export async function POST(request: NextRequest) {
       const seen = new Set<string>();
       for (const p of profiles || []) {
         if (!seen.has(p.creator_id)) {
+          seen.add(p.creator_id);
+          creatorIds.push({ id: p.creator_id, handle: p.handle });
+        }
+      }
+    } else if (mode === 'has_ai_summary') {
+      // Re-embed creators that have an AI summary — these get much richer embeddings
+      // Query social_profiles directly for handles + creator_ids where ai_summary exists,
+      // limited to batchSize to avoid the .in() query size limit issue
+      const { data: profiles } = await supabase
+        .from('social_profiles')
+        .select('creator_id, handle')
+        .not('ai_summary', 'is', null)
+        .not('creator_id', 'is', null)
+        .limit(batchSize);
+
+      const seen = new Set<string>();
+      for (const p of profiles || []) {
+        if (!seen.has(p.creator_id) && p.handle) {
           seen.add(p.creator_id);
           creatorIds.push({ id: p.creator_id, handle: p.handle });
         }
@@ -169,7 +198,6 @@ export async function POST(request: NextRequest) {
       const notEnriched = (creators || []).filter(c => !enrichedIds.has(c.id));
       const ordered = [...enriched, ...notEnriched].slice(0, batchSize);
 
-      // Get a handle for each
       for (const c of ordered) {
         const profile = (enrichedProfiles || []).find((p: any) => p.creator_id === c.id);
         creatorIds.push({ id: c.id, handle: profile?.handle || c.display_name || c.id });
