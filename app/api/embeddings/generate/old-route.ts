@@ -21,7 +21,7 @@ async function buildEmbeddingText(creatorId: string): Promise<string> {
 
   const { data: profiles } = await supabase
     .from('social_profiles')
-    .select('platform, handle, bio, follower_count, engagement_rate, platform_data, enrichment_data, ai_summary, detected_language, detected_country, detected_city')
+    .select('platform, handle, bio, follower_count, engagement_rate, platform_data, enrichment_data')
     .eq('creator_id', creatorId);
 
   const parts: string[] = [];
@@ -48,18 +48,6 @@ async function buildEmbeddingText(creatorId: string): Promise<string> {
     if (category && category !== 'null' && !String(category).startsWith('None')) {
       parts.push(`Category: ${category}.`);
     }
-
-    // --- Intelligence layer data ---
-    if (profile.detected_language) {
-      parts.push(`Primary language: ${profile.detected_language}.`);
-    }
-    if (profile.detected_country) {
-      parts.push(`Location: ${profile.detected_city ? `${profile.detected_city}, ` : ''}${profile.detected_country}.`);
-    }
-    if (profile.ai_summary) {
-      parts.push(`About: ${profile.ai_summary}`);
-    }
-    // --- End intelligence layer ---
 
     const enrichment = profile.enrichment_data;
     if (enrichment && Object.keys(enrichment).length > 0) {
@@ -141,6 +129,7 @@ export async function POST(request: NextRequest) {
   try {
     const { mode, batchSize = 50, handles = [] } = await request.json();
 
+    // Get creator IDs to embed
     let creatorIds: { id: string; handle: string }[] = [];
 
     if (mode === 'specific') {
@@ -159,35 +148,6 @@ export async function POST(request: NextRequest) {
           seen.add(p.creator_id);
           creatorIds.push({ id: p.creator_id, handle: p.handle });
         }
-      }
-    } else if (mode === 'has_ai_summary') {
-      // Re-embed creators that have an AI summary — these get much richer embeddings
-      const { data: profiles } = await supabase
-        .from('social_profiles')
-        .select('creator_id, handle')
-        .not('ai_summary', 'is', null);
-
-      const seen = new Set<string>();
-      const creatorHandles = new Map<string, string>();
-      for (const p of profiles || []) {
-        if (!seen.has(p.creator_id)) {
-          seen.add(p.creator_id);
-          creatorHandles.set(p.creator_id, p.handle);
-        }
-      }
-
-      // Get the creator records, ordered by followers for quality-first processing
-      const ids = [...seen];
-      // Process in batches of batchSize
-      const { data: creators } = await supabase
-        .from('creators')
-        .select('id, display_name')
-        .in('id', ids)
-        .order('total_followers', { ascending: false })
-        .limit(batchSize);
-
-      for (const c of creators || []) {
-        creatorIds.push({ id: c.id, handle: creatorHandles.get(c.id) || c.display_name || c.id });
       }
     } else if (mode === 'enriched_first') {
       const { data: enrichedProfiles } = await supabase
@@ -209,6 +169,7 @@ export async function POST(request: NextRequest) {
       const notEnriched = (creators || []).filter(c => !enrichedIds.has(c.id));
       const ordered = [...enriched, ...notEnriched].slice(0, batchSize);
 
+      // Get a handle for each
       for (const c of ordered) {
         const profile = (enrichedProfiles || []).find((p: any) => p.creator_id === c.id);
         creatorIds.push({ id: c.id, handle: profile?.handle || c.display_name || c.id });

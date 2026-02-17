@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 
-type Mode = 'not_embedded' | 'enriched_first' | 're_embed' | 'has_ai_summary' | 'specific';
+type Mode = 'not_embedded' | 'enriched_first' | 're_embed' | 'specific';
 
 interface EmbedStatus {
   total: number;
@@ -101,7 +101,7 @@ export default function EmbeddingsPage() {
           <a href="/add" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Add Creators</a>
           <a href="/import" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Import</a>
           <a href="/enrich" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Enrich</a>
-          <a href="/embeddings" className="px-4 py-2 bg-violet-600 text-white rounded-lg font-medium">Embeddings</a>
+          <a href="/embeddings" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Embeddings</a>
           <a href="/intelligence" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Intelligence</a>
           <a href="/database" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Creators</a>
           <a href="/brands" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Brands</a>
@@ -152,25 +152,21 @@ export default function EmbeddingsPage() {
               {([
                 { value: 'not_embedded', label: 'Not yet embedded', desc: 'Creators without embeddings, highest followers first' },
                 { value: 'enriched_first', label: 'Enriched first', desc: 'Prioritize creators with post data — produces better embeddings' },
-                { value: 'has_ai_summary', label: 'Re-embed with AI summary', desc: 'Re-embed creators that have an AI summary — includes language, location & summary for richer search', highlight: true },
-                { value: 're_embed', label: 'Re-embed all', desc: 'Regenerate all existing embeddings' },
+                { value: 're_embed', label: 'Re-embed all', desc: 'Regenerate existing embeddings (use after enriching more creators)' },
                 { value: 'specific', label: 'Specific creators', desc: 'Paste handles below' },
-              ] as { value: Mode; label: string; desc: string; highlight?: boolean }[]).map(opt => (
-                <label key={opt.value} className={`flex items-start gap-3 cursor-pointer p-3 rounded-lg hover:bg-slate-50 ${opt.highlight ? 'border border-violet-200 bg-violet-50 hover:bg-violet-50' : ''}`}>
+              ] as { value: Mode; label: string; desc: string }[]).map(opt => (
+                <label key={opt.value} className="flex items-start gap-3 cursor-pointer p-3 rounded-lg hover:bg-slate-50">
                   <input
                     type="radio"
                     name="mode"
                     value={opt.value}
                     checked={mode === opt.value}
                     onChange={() => setMode(opt.value)}
-                    className="mt-0.5 accent-violet-600"
+                    className="mt-0.5"
                     disabled={isRunning}
                   />
                   <div>
-                    <div className={`font-medium text-sm flex items-center gap-2 ${opt.highlight ? 'text-violet-700' : 'text-slate-800'}`}>
-                      {opt.label}
-                      {opt.highlight && <span className="text-xs bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded font-medium">recommended</span>}
-                    </div>
+                    <div className="font-medium text-slate-800 text-sm">{opt.label}</div>
                     <div className="text-xs text-slate-500">{opt.desc}</div>
                   </div>
                 </label>
@@ -209,12 +205,6 @@ export default function EmbeddingsPage() {
               <p className="text-xs text-slate-500 mt-1">
                 Est. cost: ~${((batchSize * 300) / 1000000 * 0.02).toFixed(4)} (negligible)
               </p>
-            </div>
-          )}
-
-          {mode === 'has_ai_summary' && (
-            <div className="mb-5 p-3 bg-violet-50 border border-violet-200 rounded-lg text-xs text-violet-800">
-              <strong>What's included in each embedding:</strong> bio, followers, engagement, content mix, hashtags, brand partnerships, <strong>+ AI summary, language, and location</strong>. This produces significantly richer semantic search results.
             </div>
           )}
 
