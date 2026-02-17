@@ -223,19 +223,43 @@ ${context.join('\n')}
 
 Write ONLY the summary, no preamble, no labels, no quotes.`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  const callClaude = async (promptText: string): Promise<Response> => {
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: promptText }],
+      }),
+    });
+  };
+
+  let response = await callClaude(prompt);
+
+  // If prompt too large (400), retry with trimmed context (captions shortened, fewer included)
+  if (response.status === 400) {
+    const trimmedContext = context.map(line => {
+      if (line.startsWith('Caption')) return line.slice(0, line.indexOf(':') + 152); // ~150 chars per caption
+      if (line.startsWith('Bio:')) return line.slice(0, 160); // ~150 chars of bio
+      return line;
+    }).slice(0, 12); // cap total context lines
+
+    const trimmedPrompt = `You are an influencer marketing analyst. Based on the following creator data, write a concise 3-4 sentence summary of this creator for a brand considering a partnership. Describe what they create, their style/tone, what kind of brands would be a good fit, and any notable strengths or signals.
+
+Be specific and useful — don't be generic. Reference actual data points. Write in third person.
+
+CREATOR DATA:
+${trimmedContext.join('\n')}
+
+Write ONLY the summary, no preamble, no labels, no quotes.`;
+
+    response = await callClaude(trimmedPrompt);
+  }
 
   if (!response.ok) {
     throw new Error(`Claude API error: ${response.status}`);
@@ -316,6 +340,8 @@ export async function POST(request: Request) {
       .is('intelligence_updated_at', null)
       .not('enrichment_data', 'is', null)
       .order('id');
+  } else if (mode === 'missing_ai_summary') {
+    query = query.is('ai_summary', null);
   } else if (mode === 'specific' && handles.length > 0) {
     query = query.in('handle', handles);
   }
@@ -365,15 +391,22 @@ export async function POST(request: Request) {
       const website = extractWebsite(bio);
 
       let aiSummary: string | null = null;
+      let aiSkipped = false;
       if (doAI) {
-        aiSummary = await generateAISummary(
-          profile,
-          enrichment,
-          captions,
-          bio,
-          location,
-          language.primary
-        );
+        try {
+          aiSummary = await generateAISummary(
+            profile,
+            enrichment,
+            captions,
+            bio,
+            location,
+            language.primary
+          );
+        } catch (err) {
+          aiSkipped = true;
+          console.error(`AI summary failed for ${profile.handle}:`, err instanceof Error ? err.message : err);
+          // Save everything else, leave ai_summary as null so it gets picked up next run
+        }
       }
 
       await saveIntelligence(profile.id, profile.creator_id as string, {
@@ -393,6 +426,7 @@ export async function POST(request: Request) {
         email: emails[0] || null,
         website,
         aiSummary: !!aiSummary,
+        ...(aiSkipped && { error: 'AI summary skipped (will retry next run)' }),
       });
     } catch (err) {
       console.error(`Error processing ${profile.handle}:`, err);

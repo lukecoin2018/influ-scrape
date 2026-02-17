@@ -308,6 +308,7 @@ async function saveIntelligence(
       country: data.location.country,
       city: data.location.city,
       contact_email: data.emails[0] || null,
+      ai_embedded: false, // mark as needing re-embed with new intelligence data
     })
     .eq('id', creatorId);
 }

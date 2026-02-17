@@ -136,6 +136,7 @@ async function saveEmbedding(
       embedding: vectorString,
       embedding_text: embeddingText,
       embedded_at: new Date().toISOString(),
+      ai_embedded: true, // mark as re-embedded with intelligence data
     })
     .eq('id', creatorId);
 
@@ -166,26 +167,28 @@ export async function POST(request: NextRequest) {
         }
       }
     } else if (mode === 'has_ai_summary') {
-      // Re-embed creators where embedded_at < intelligence_updated_at
-      // meaning they were embedded before intelligence ran and need a richer re-embed
+      // Simple query: creators where ai_embedded = false (set by intelligence route)
+      const { data: creators } = await supabase
+        .from('creators')
+        .select('id, display_name')
+        .eq('ai_embedded', false)
+        .order('total_followers', { ascending: false })
+        .limit(batchSize);
+
+      // Get a handle for each creator
+      const ids = (creators || []).map(c => c.id);
       const { data: profiles } = await supabase
         .from('social_profiles')
-        .select('creator_id, handle, intelligence_updated_at, creators!inner(embedded_at)')
-        .not('ai_summary', 'is', null)
-        .not('creator_id', 'is', null)
-        .not('intelligence_updated_at', 'is', null)
-        .limit(batchSize * 3); // fetch extra to account for deduplication
+        .select('creator_id, handle')
+        .in('creator_id', ids);
 
-      const seen = new Set<string>();
+      const handleMap = new Map<string, string>();
       for (const p of profiles || []) {
-        if (seen.has(p.creator_id) || !p.handle) continue;
-        const embeddedAt = (p as any).creators?.embedded_at;
-        // Include if never embedded, or embedded before intelligence ran
-        if (!embeddedAt || new Date(embeddedAt) < new Date(p.intelligence_updated_at)) {
-          seen.add(p.creator_id);
-          creatorIds.push({ id: p.creator_id, handle: p.handle });
-          if (creatorIds.length >= batchSize) break;
-        }
+        if (!handleMap.has(p.creator_id)) handleMap.set(p.creator_id, p.handle);
+      }
+
+      for (const c of creators || []) {
+        creatorIds.push({ id: c.id, handle: handleMap.get(c.id) || c.display_name || c.id });
       }
     } else if (mode === 'enriched_first') {
       const { data: enrichedProfiles } = await supabase
