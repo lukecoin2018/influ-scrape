@@ -162,21 +162,32 @@ export async function POST(request: NextRequest) {
       }
     } else if (mode === 'has_ai_summary') {
       // Re-embed creators that have an AI summary — these get much richer embeddings
-      // Query social_profiles directly for handles + creator_ids where ai_summary exists,
-      // limited to batchSize to avoid the .in() query size limit issue
       const { data: profiles } = await supabase
         .from('social_profiles')
         .select('creator_id, handle')
-        .not('ai_summary', 'is', null)
-        .not('creator_id', 'is', null)
-        .limit(batchSize);
+        .not('ai_summary', 'is', null);
 
       const seen = new Set<string>();
+      const creatorHandles = new Map<string, string>();
       for (const p of profiles || []) {
-        if (!seen.has(p.creator_id) && p.handle) {
+        if (!seen.has(p.creator_id)) {
           seen.add(p.creator_id);
-          creatorIds.push({ id: p.creator_id, handle: p.handle });
+          creatorHandles.set(p.creator_id, p.handle);
         }
+      }
+
+      // Get the creator records, ordered by followers for quality-first processing
+      const ids = [...seen];
+      // Process in batches of batchSize
+      const { data: creators } = await supabase
+        .from('creators')
+        .select('id, display_name')
+        .in('id', ids)
+        .order('total_followers', { ascending: false })
+        .limit(batchSize);
+
+      for (const c of creators || []) {
+        creatorIds.push({ id: c.id, handle: creatorHandles.get(c.id) || c.display_name || c.id });
       }
     } else if (mode === 'enriched_first') {
       const { data: enrichedProfiles } = await supabase
