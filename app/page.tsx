@@ -471,6 +471,14 @@ export default function Home() {
           <a href="/enrich" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Enrich</a>
           <a href="/intelligence" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Intelligence</a>
         <a href="/embeddings" className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Embeddings</a>
+        <a href="#" 
+         onClick={async (e) => {
+          e.preventDefault();
+          await fetch('/api/auth/logout', { method: 'POST' });
+          window.location.href = '/login';
+        }}
+        className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium"
+        >Logout</a>
         </div>
 
         <div className="flex gap-4 mb-6">

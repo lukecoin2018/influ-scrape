@@ -4,21 +4,28 @@ import type { NextRequest } from 'next/server';
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Skip middleware for public routes and API routes that don't need auth
+  // Only allow these specific routes without authentication
+  const publicPaths = ['/login', '/api/auth/login', '/api/auth/logout'];
+  const isPublicPath = publicPaths.some(path => pathname === path || pathname.startsWith(path + '/'));
+  
+  // Skip static files and Next.js internals
   if (
     pathname.startsWith('/_next') ||
-    pathname.startsWith('/api/auth') ||
-    pathname === '/login' ||
-    pathname === '/favicon.ico'
+    pathname.startsWith('/favicon.ico') ||
+    pathname.startsWith('/api/auth')
   ) {
     return NextResponse.next();
   }
 
-  // Check if user is authenticated via session cookie
+  // If it's a public path, allow through
+  if (isPublicPath) {
+    return NextResponse.next();
+  }
+
+  // All other routes (including /) require authentication
   const sessionCookie = request.cookies.get('scraper_session');
 
   if (!sessionCookie || sessionCookie.value !== 'authenticated') {
-    // Redirect to login page
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);
@@ -30,12 +37,8 @@ export function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except:
-     * - /api/auth/* (authentication endpoints)
-     * - /_next/static (static files)
-     * - /_next/image (image optimization)
-     * - /favicon.ico (favicon)
+     * Match all paths including root
      */
-    '/((?!api/auth|_next/static|_next/image|favicon.ico).*)',
+    '/(.*)',
   ],
 };
