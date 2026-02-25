@@ -110,7 +110,11 @@ export default function Home() {
         }),
       });
 
-      const { runId } = await hashtagResponse.json();
+      const hashtagData = await hashtagResponse.json();
+if (!hashtagResponse.ok || !hashtagData.runId) {
+  throw new Error(`Failed to start hashtag scrape: ${JSON.stringify(hashtagData)}`);
+}
+const { runId } = hashtagData;
 
       // Poll hashtag scrape
       let hashtagComplete = false;
@@ -214,7 +218,11 @@ export default function Home() {
           body: JSON.stringify({ usernames: batch }),
         });
 
-        const { runId: profileRunId } = await profileResponse.json();
+        const profileData = await profileResponse.json();
+if (!profileResponse.ok || !profileData.runId) {
+  throw new Error(`Failed to start profile scrape: ${JSON.stringify(profileData)}`);
+}
+const profileRunId = profileData.runId;
 
         let profileComplete = false;
         let profileRunStatus: any = null;
@@ -367,7 +375,9 @@ export default function Home() {
             body: JSON.stringify({ usernames: batch }),
           });
 
-          const { runId: brandRunId } = await brandResponse.json();
+          const brandData = await brandResponse.json();
+if (!brandData.runId) throw new Error(`Failed to start brand scrape: ${JSON.stringify(brandData)}`);
+const brandRunId = brandData.runId;
 
           let brandComplete = false;
           let brandRunStatus: any = null;
