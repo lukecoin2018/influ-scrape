@@ -83,7 +83,8 @@ export async function getRunStatus(
   runId: string
 ): Promise<{ status: string; datasetId?: string }> {
   const response = await fetch(
-    `${APIFY_API_BASE}/actor-runs/${runId}?token=${APIFY_TOKEN}`
+    `${APIFY_API_BASE}/actor-runs/${runId}?token=${APIFY_TOKEN}`,
+    { cache: 'no-store' }
   );
 
   if (!response.ok) {
