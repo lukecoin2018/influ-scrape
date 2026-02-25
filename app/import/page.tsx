@@ -46,6 +46,7 @@ export default function ImportPage() {
     saved: 0,
     failed: 0,
   });
+  const [platform, setPlatform] = useState<'instagram' | 'tiktok'>('instagram');
 
   const mapApifyProfile = (profile: any) => {
     return {
@@ -62,6 +63,25 @@ export default function ImportPage() {
       profileUrl: `https://instagram.com/${profile.username || profile.profileName}`,
       website: profile.externalUrl || profile.website || '',
       profilePicUrl: profile.profilePicUrl || profile.profilePicHd || '',
+    };
+  };
+
+  const mapTikTokProfile = (profile: any) => {
+    const handle = (profile.username || '').toLowerCase();
+    return {
+      handle,
+      fullName: profile.displayName || '',
+      bio: (profile.bio || '').slice(0, 500),
+      followerCount: profile.followers?.raw || profile.followers || 0,
+      followingCount: profile.following?.raw || profile.following || 0,
+      postsCount: profile.videos?.raw || profile.videos || 0,
+      engagementRate: null,
+      isVerified: false,
+      isBusinessAccount: false,
+      categoryName: '',
+      profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
+      website: '',
+      profilePicUrl: profile.profileImage || '',
     };
   };
 
@@ -111,7 +131,7 @@ export default function ImportPage() {
         }));
 
         items.forEach((profile: any) => {
-          const creator = mapApifyProfile(profile);
+          const creator = platform === 'tiktok' ? mapTikTokProfile(profile) : mapApifyProfile(profile);
           if (creator.handle && !uniqueCreatorsMap.has(creator.handle)) {
             uniqueCreatorsMap.set(creator.handle, creator);
           }
@@ -152,7 +172,7 @@ export default function ImportPage() {
         const response = await fetch('/api/database/save-creators', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ creators: batch }),
+          body: JSON.stringify({ creators: batch, platform }),
         });
 
         if (response.ok) {
@@ -215,6 +235,33 @@ export default function ImportPage() {
 
         <div className="bg-white rounded-xl shadow-lg p-8 mb-6">
           <h2 className="text-2xl font-bold text-slate-800 mb-4">Import Configuration</h2>
+
+
+          <div className="mb-6">
+  <label className="block text-sm font-medium text-slate-700 mb-2">Platform</label>
+  <div className="grid grid-cols-2 gap-3">
+    <button
+      onClick={() => setPlatform('instagram')}
+      className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
+        platform === 'instagram'
+          ? 'bg-pink-50 border-pink-500 text-pink-700'
+          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+      }`}
+    >
+      📸 Instagram
+    </button>
+    <button
+      onClick={() => setPlatform('tiktok')}
+      className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
+        platform === 'tiktok'
+          ? 'bg-black border-black text-white'
+          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+      }`}
+    >
+      🎵 TikTok
+    </button>
+  </div>
+</div>
 
           <div className="mb-6">
             <label className="block text-sm font-medium text-slate-700 mb-2">
