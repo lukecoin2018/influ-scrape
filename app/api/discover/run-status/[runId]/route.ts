@@ -1,12 +1,14 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { getRunStatus } from '@/lib/apify';
 
 export async function GET(
   request: NextRequest,
-  context: { params: Promise<{ runId: string }> }
+  context: { params: Promise<{ runId: string; nxtPrunId?: string }> }
 ) {
   try {
-    const { runId } = await context.params;
+    const params = await context.params;
+    const runId = params.runId || params.nxtPrunId;
 
     if (!runId) {
       return NextResponse.json(
