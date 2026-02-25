@@ -85,7 +85,13 @@ export default function AddByHandlePage() {
         body: JSON.stringify({ usernames: uniqueHandles }),
       });
 
-      const { runId } = await profileResponse.json();
+      const profileData = await profileResponse.json();
+
+if (!profileResponse.ok || !profileData.runId) {
+  throw new Error(`Failed to start scrape: ${JSON.stringify(profileData)}`);
+}
+
+const { runId } = profileData;
 
       // Poll for completion
       let complete = false;
