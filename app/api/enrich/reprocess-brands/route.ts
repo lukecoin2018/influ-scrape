@@ -6,18 +6,14 @@
  *
  * Body params:
  *   handles?   string[]  — if provided, only reprocess these creator handles
- *                          if omitted, reprocesses ALL creators with stored posts
+ *   limit?     number    — max profiles to process per call (default 100)
+ *   offset?    number    — skip this many profiles, for pagination (default 0)
  *   dryRun?    boolean   — if true, returns what would change but writes nothing
- *
- * Returns per-creator before/after comparison so you can verify quality
- * before committing to a full re-run.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { isLikelyBrand } from '@/lib/brandDetection';
-
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface StoredPost {
   id: string;
@@ -45,56 +41,33 @@ interface CreatorResult {
   sponsoredPostCount: number;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * Re-run brand detection on a single stored post using the improved filter.
- * This mirrors the logic in detectBrandsInPost() but works from stored DB fields
- * (caption, hashtags, tagged_accounts) rather than raw Apify data.
- */
 function redetectBrandsFromStoredPost(post: StoredPost): string[] {
   if (!post.is_sponsored) return [];
 
   const brands = new Set<string>();
   const caption = post.caption || '';
 
-  // @mentions from stored caption
   const mentionRegex = /@([a-zA-Z0-9._]+)/g;
   let match;
   while ((match = mentionRegex.exec(caption)) !== null) {
     const handle = match[1].toLowerCase();
-    if (isLikelyBrand(handle)) {
-      brands.add(handle);
-    }
+    if (isLikelyBrand(handle)) brands.add(handle);
   }
 
-  // tagged_accounts stored from Apify taggedUsers
   const taggedAccounts = Array.isArray(post.tagged_accounts) ? post.tagged_accounts : [];
   taggedAccounts.forEach(handle => {
     if (typeof handle === 'string') {
       const clean = handle.toLowerCase().replace('@', '');
-      if (isLikelyBrand(clean)) {
-        brands.add(clean);
-      }
+      if (isLikelyBrand(clean)) brands.add(clean);
     }
   });
 
   return Array.from(brands);
 }
 
-/**
- * Recalculate enrichment_data.detected_brands from a set of reprocessed posts.
- * Only touches the brand-related fields — other metrics (engagement, hashtags etc.)
- * are left exactly as they are.
- */
-function recalculateBrandFields(posts: StoredPost[]): {
-  detected_brands: string[];
-  sponsored_posts_count: number;
-  brand_partnership_count: number;
-} {
+function recalculateBrandFields(posts: StoredPost[]) {
   const sponsoredPosts = posts.filter(p => p.is_sponsored);
   const allBrands = new Set(sponsoredPosts.flatMap(p => redetectBrandsFromStoredPost(p)));
-
   return {
     detected_brands: Array.from(allBrands),
     sponsored_posts_count: sponsoredPosts.length,
@@ -102,21 +75,22 @@ function recalculateBrandFields(posts: StoredPost[]): {
   };
 }
 
-// ── Handler ────────────────────────────────────────────────────────────────────
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
     const handles: string[] | undefined = body.handles;
     const dryRun: boolean = body.dryRun === true;
+    const limit: number = body.limit ?? 100;
+    const offset: number = body.offset ?? 0;
 
-    // 1. Find social_profiles to process
     let profileQuery = supabase
       .from('social_profiles')
       .select('id, handle, enrichment_data');
 
     if (handles && handles.length > 0) {
       profileQuery = profileQuery.in('handle', handles);
+    } else {
+      profileQuery = profileQuery.range(offset, offset + limit - 1);
     }
 
     const { data: profiles, error: profilesError } = await profileQuery;
@@ -133,7 +107,6 @@ export async function POST(request: NextRequest) {
     let updatedCount = 0;
     let skippedCount = 0;
 
-    // 2. For each profile, load stored posts and re-detect
     for (const profile of profiles) {
       const { data: rawPosts, error: postsError } = await supabase
         .from('creator_posts')
@@ -151,14 +124,9 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // What was stored before
-      const existingBrands: string[] =
-        profile.enrichment_data?.detected_brands || [];
-
-      // What the improved filter produces
+      const existingBrands: string[] = profile.enrichment_data?.detected_brands || [];
       const newBrandFields = recalculateBrandFields(posts);
       const newBrands = newBrandFields.detected_brands;
-
       const removed = existingBrands.filter(b => !newBrands.includes(b));
       const kept = existingBrands.filter(b => newBrands.includes(b));
 
@@ -172,7 +140,6 @@ export async function POST(request: NextRequest) {
         sponsoredPostCount: newBrandFields.sponsored_posts_count,
       });
 
-      // 3. Write back unless dry run
       if (!dryRun) {
         const updatedEnrichmentData = {
           ...(profile.enrichment_data || {}),
@@ -194,13 +161,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 4. Summary stats
     const totalBrandsBefore = results.reduce((s, r) => s + r.before.length, 0);
     const totalBrandsAfter = results.reduce((s, r) => s + r.after.length, 0);
     const totalRemoved = results.reduce((s, r) => s + r.removed.length, 0);
 
     return NextResponse.json({
       dryRun,
+      offset,
+      limit,
       profilesProcessed: results.length,
       profilesSkipped: skippedCount,
       profilesUpdated: dryRun ? 0 : updatedCount,
@@ -208,12 +176,10 @@ export async function POST(request: NextRequest) {
         totalBrandsBefore,
         totalBrandsAfter,
         totalRemoved,
-        reductionPercent:
-          totalBrandsBefore > 0
-            ? Math.round((totalRemoved / totalBrandsBefore) * 100)
-            : 0,
+        reductionPercent: totalBrandsBefore > 0
+          ? Math.round((totalRemoved / totalBrandsBefore) * 100)
+          : 0,
       },
-      // Per-creator detail — useful for spot-checking results
       results: results.map(r => ({
         handle: r.handle,
         sponsoredPostCount: r.sponsoredPostCount,
