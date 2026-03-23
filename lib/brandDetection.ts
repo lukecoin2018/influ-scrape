@@ -10,86 +10,16 @@ const SPONSORSHIP_SIGNALS = [
 
 // ── Noise filter ───────────────────────────────────────────────────────────────
 
-// Generic English words that appear in captions but are never brand handles
-const COMMON_WORDS = new Set([
-  'white', 'black', 'blue', 'red', 'green', 'pink', 'gold', 'silver',
-  'colour', 'color', 'best', 'salt', 'urban', 'naked', 'whole', 'wild',
-  'pure', 'free', 'new', 'real', 'live', 'love', 'life', 'style',
-  'shop', 'store', 'brand', 'team', 'post', 'page', 'link', 'bio',
-  'model', 'photo', 'video', 'edit', 'film', 'art', 'media', 'group',
-  'official', 'original', 'daily', 'world', 'global', 'local', 'studio',
-  'house', 'home', 'club', 'lab', 'labs', 'co', 'inc', 'llc',
-  'the', 'and', 'for', 'you', 'not', 'but', 'our', 'all', 'its',
-  'dark', 'light', 'mini', 'mega', 'super', 'ultra', 'pro', 'plus',
-  'soft', 'bold', 'rich', 'cool', 'warm', 'hot', 'fresh', 'clean',
-  'wear', 'looks', 'vibes', 'goals', 'inspo', 'mood', 'check',
-]);
-
-// Common first names frequently misidentified as brands
-const COMMON_FIRST_NAMES = new Set([
-  'bella', 'charlotte', 'morgan', 'ryan', 'madison', 'sebastian',
-  'emma', 'olivia', 'sophia', 'isabella', 'mia', 'luna', 'grace',
-  'chloe', 'avery', 'ella', 'scarlett', 'riley', 'aria', 'lily',
-  'zoey', 'victoria', 'aurora', 'savannah', 'claire', 'ellie',
-  'liam', 'noah', 'oliver', 'james', 'lucas', 'mason', 'ethan',
-  'aiden', 'logan', 'jackson', 'jack', 'owen', 'samuel',
-  'henry', 'wyatt', 'carter', 'julian', 'luke', 'grayson', 'leo',
-  'hannah', 'zoe', 'nora', 'mila', 'layla', 'camila', 'penelope',
-  'alice', 'stella', 'hazel', 'eleanor', 'natalie', 'anna', 'violet',
-  'sarah', 'jessica', 'emily', 'ashley', 'taylor', 'samantha', 'rachel',
-  'melissa', 'nicole', 'amanda', 'stephanie', 'lisa', 'laura', 'julia',
-  'mike', 'david', 'chris', 'daniel', 'matt', 'jason', 'josh',
-  'alex', 'kyle', 'tyler', 'brandon', 'justin', 'adam', 'nathan',
-  'tom', 'ben', 'max', 'jake', 'sean', 'derek', 'drew', 'evan',
-  'sofia', 'leah', 'abigail', 'brooklyn', 'paisley', 'evelyn',
-  'aaliyah', 'jade', 'kylie', 'kendall', 'hailey', 'brianna',
-]);
-
-// Handle suffixes that strongly indicate a personal/creator account
-const PERSONAL_HANDLE_SUFFIXES = [
-  '_photography', '_photo', '_photos', '_fotografie',
-  '_makeup', '_mua',
-  '_hair', '_nails',
-  '_fitness', '_fit',
-  '_art', '_arts', '_artist', '_arte',
-  '_real',
-  '_life', '_lifestyle',
-  '_blog', '_vlogs', '_vlog',
-];
-
 /**
- * Returns true if the handle looks like a real brand account.
- * Returns false if it looks like noise, a common word, a first name,
- * or a personal/creator account handle.
- *
- * Note: paid_partnership_label handles bypass this filter — if Instagram
- * itself labelled it as a paid partnership, we trust that signal.
+ * Returns false only for single-character handles (e.g. "h", "k", "l").
+ * Everything else is passed through — further validation should be done
+ * via follower count lookup (Layer 3) or manual review.
  */
 export function isLikelyBrand(handle: string): boolean {
   const h = handle.toLowerCase().trim();
 
-  // Too short to be a real brand handle
-  if (h.length < 3) return false;
-
-  // Purely numeric
-  if (/^\d+$/.test(h)) return false;
-
-  // Common English word — not a brand
-  if (COMMON_WORDS.has(h)) return false;
-
-  // Common first name alone — not a brand
-  if (COMMON_FIRST_NAMES.has(h)) return false;
-
-  // Handle ending with a personal/creator suffix
-  if (PERSONAL_HANDLE_SUFFIXES.some(suffix => h.endsWith(suffix))) return false;
-
-  // Pattern like "firstname.lastname" or "firstname_lastname"
-  // Only reject if the first segment is a known first name
-  const separatorMatch = h.match(/^([a-z]+)[._]([a-z]+)$/);
-  if (separatorMatch) {
-    const firstName = separatorMatch[1];
-    if (COMMON_FIRST_NAMES.has(firstName)) return false;
-  }
+  // Single character — always junk
+  if (h.length <= 1) return false;
 
   return true;
 }
