@@ -9,8 +9,26 @@ const PRESET_HASHTAGS = [
 ];
 
 const SPONSORSHIP_HASHTAGS = [
-  'ad', 'sponsored', 'gifted', 'brandpartner', 'collab', 
-  'brandambassador', 'paidpartnership'
+  // Universal
+  'ad', 'sponsored', 'gifted', 'paidpartnership', 'brandambassador',
+  'collab', 'brandpartner', 'prpackage', 'prhaul',
+  // German
+  'werbung', 'anzeige', 'kooperation', 'gesponsert', 'produktplatzierung',
+  // Spanish
+  'publicidad', 'publi', 'patrocinado', 'colaboracion', 'embajadora',
+  // French
+  'partenariat', 'sponsorise', 'offert', 'partenaire',
+  // Italian
+  'adv', 'sponsorizzato', 'collaborazione', 'omaggio',
+  // Portuguese
+  'publipost', 'parceria', 'publicidade',
+  // Dutch
+  'samenwerking', 'gesponsord', 'reclame',
+  // Swedish / Norwegian / Danish
+  'reklam', 'samarbete', 'annons', 'betaltsamarbete',
+  'reklame', 'samarbeid', 'samarbejde',
+  // Polish / Estonian
+  'reklama', 'wspolpraca', 'reklaam', 'koostoo',
 ];
 
 interface SetupPanelProps {
