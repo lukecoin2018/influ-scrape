@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { detectBrandsInPost } from '@/lib/brandDetection';
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
@@ -8,48 +7,56 @@ const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 function extractHashtags(caption: string): string[] {
-  // Matches ASCII and accented characters (covers European languages)
   const matches = caption.match(/#[\w\u00C0-\u024F]+/g) || [];
   return [...new Set(matches.map(h => h.slice(1).toLowerCase()))];
 }
 
 function extractMentions(caption: string): string[] {
-  // Extended to handle accented characters in handles (e.g. @L'Oréal)
-  const matches = caption.match(/@[\w.\u00C0-\u024F'-]+/g) || [];
+  const matches = caption.match(/@[\w.]+/g) || [];
   return [...new Set(matches.map(m => m.slice(1).toLowerCase()))];
+}
+
+function detectSponsorship(caption: string, taggedAccounts: string[]): {
+  isSponsored: boolean;
+  signals: string[];
+  brands: string[];
+} {
+  const signals: string[] = [];
+  const captionLower = caption.toLowerCase();
+
+  const sponsorHashtags = [
+    '#ad', '#sponsored', '#gifted', '#paid', '#partner',
+    '#brandpartner', '#brandambassador', '#collab',
+    '#werbung', '#anzeige',
+    '#pub', '#publicite',
+  ];
+
+  for (const tag of sponsorHashtags) {
+    if (captionLower.includes(tag)) signals.push(tag);
+  }
+
+  if (captionLower.includes('paid partnership')) signals.push('paid_partnership_label');
+  if (captionLower.includes('sponsored by')) signals.push('sponsored_by');
+  if (captionLower.includes('gifted by')) signals.push('gifted_by');
+  if (captionLower.includes('in collaboration with')) signals.push('collaboration');
+  if (captionLower.includes('ad |') || captionLower.includes('| ad')) signals.push('ad_label');
+
+  const brands = signals.length > 0 ? taggedAccounts : [];
+
+  return {
+    isSponsored: signals.length > 0,
+    signals,
+    brands,
+  };
 }
 
 function mapInstagramPost(post: any, socialProfileId: string) {
   const caption = post.caption || '';
-
-  // Hashtags: prefer Apify's parsed array, fall back to extracting from caption.
-  // Apify returns hashtags without the # prefix in the array.
-  const hashtagsFromApify = Array.isArray(post.hashtags)
-    ? post.hashtags.map((h: any) => (typeof h === 'string' ? h : h.name || '')).filter(Boolean).map((h: string) => h.toLowerCase().replace(/^#/, ''))
-    : [];
-  const hashtagsFromCaption = extractHashtags(caption);
-  const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
-
-  // Tagged accounts: merge Apify's taggedUsers with @mentions extracted from caption.
-  const taggedFromApify = (post.taggedUsers || [])
-    .map((u: any) => (typeof u === 'string' ? u : u.username || u.name || ''))
-    .filter(Boolean)
-    .map((u: string) => u.toLowerCase().replace(/^@/, ''));
-  const mentionsFromCaption = extractMentions(caption);
-  const taggedAccounts = [...new Set([...taggedFromApify, ...mentionsFromCaption])];
-
-  // Run brand detection using the shared lib — NOT an inline function.
-  // This ensures future scrapes use exactly the same multilingual detection
-  // logic as the DB re-run scripts.
-  const ownerUsername = post.ownerUsername || post.owner?.username || '';
-  const detection = detectBrandsInPost({
-    ownerUsername,
-    caption,
-    hashtags,
-    taggedAccounts,
-    url: post.url || '',
-    type: post.type || 'image',
-  });
+  const hashtags = extractHashtags(caption);
+  const taggedAccounts = extractMentions(caption).concat(
+    (post.taggedUsers || []).map((u: any) => u.username || u).filter(Boolean)
+  );
+  const { isSponsored, signals, brands } = detectSponsorship(caption, taggedAccounts);
 
   const timestamp = post.timestamp || post.takenAtTimestamp;
   const postedAt = timestamp
@@ -71,34 +78,19 @@ function mapInstagramPost(post: any, socialProfileId: string) {
     shares_count: 0,
     saves_count: 0,
     posted_at: postedAt,
-    is_sponsored: detection.isSponsoredContent,
-    sponsor_signals: detection.detectionSignals,
-    detected_brands: detection.brandHandles,
+    is_sponsored: isSponsored,
+    sponsor_signals: signals,
+    detected_brands: brands,
   };
 }
 
 function mapTikTokPost(post: any, socialProfileId: string) {
   const caption = post.text || post.desc || '';
-
-  // TikTok: merge Apify's hashtags array with caption extraction
-  const hashtagsFromApify = (post.hashtags || [])
-    .map((h: any) => (typeof h === 'string' ? h : h.name || ''))
-    .filter(Boolean)
-    .map((h: string) => h.toLowerCase().replace(/^#/, ''));
-  const hashtagsFromCaption = extractHashtags(caption);
-  const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
-
+  const hashtags = extractHashtags(caption).concat(
+    (post.hashtags || []).map((h: any) => h.name || h).filter(Boolean)
+  );
   const taggedAccounts = extractMentions(caption);
-  const ownerUsername = post.authorMeta?.name || post.author?.uniqueId || post.uniqueId || '';
-
-  const detection = detectBrandsInPost({
-    ownerUsername,
-    caption,
-    hashtags,
-    taggedAccounts,
-    url: post.webVideoUrl || post.url || '',
-    type: 'video',
-  });
+  const { isSponsored, signals, brands } = detectSponsorship(caption, taggedAccounts);
 
   const postedAt = post.createTimeISO ||
     (post.createTime ? new Date(post.createTime * 1000).toISOString() : null);
@@ -118,9 +110,9 @@ function mapTikTokPost(post: any, socialProfileId: string) {
     shares_count: post.shareCount || post.shares || 0,
     saves_count: post.collectCount || 0,
     posted_at: postedAt,
-    is_sponsored: detection.isSponsoredContent,
-    sponsor_signals: detection.detectionSignals,
-    detected_brands: detection.brandHandles,
+    is_sponsored: isSponsored,
+    sponsor_signals: signals,
+    detected_brands: brands,
   };
 }
 
@@ -288,7 +280,7 @@ export async function POST(request: NextRequest) {
 
     console.log(`Raw posts for ${handle} (${platform}): ${rawPosts.length} items`);
 
-    // 3. Map posts using shared detectBrandsInPost()
+    // 3. Map posts
     const mappedPosts = rawPosts
       .slice(0, postsPerCreator)
       .map((post: any) =>
@@ -296,7 +288,7 @@ export async function POST(request: NextRequest) {
           ? mapInstagramPost(post, socialProfileId)
           : mapTikTokPost(post, socialProfileId)
       )
-      .filter((p: any) => p.post_id);
+      .filter((p: any) => p.post_id); // skip posts with no ID
 
     // 4. Save posts (upsert)
     for (const post of mappedPosts) {

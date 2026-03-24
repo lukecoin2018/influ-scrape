@@ -1,6 +1,7 @@
+
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { detectBrandsInPost } from '@/lib/brandDetection';
+import { isLikelyBrand } from '@/lib/brandDetection';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,6 @@ interface CreatorResult {
   socialProfileId: string;
   before: string[];
   after: string[];
-  added: string[];
   removed: string[];
   kept: string[];
   sponsoredPostCount: number;
@@ -34,73 +34,57 @@ interface CreatorResult {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /**
- * Re-runs full brand detection on a stored post using the shared
- * detectBrandsInPost() from lib/brandDetection.ts.
- *
- * This means re-processing re-evaluates is_sponsored too — so a post that
- * was previously missed due to the old limited signal list gets correctly
- * flagged now.
+ * Re-run brand detection on a single stored post using the improved filter.
+ * This mirrors the logic in detectBrandsInPost() but works from stored DB fields
+ * (caption, hashtags, tagged_accounts) rather than raw Apify data.
  */
-function redetectFromStoredPost(post: StoredPost): {
-  isSponsoredContent: boolean;
-  brandHandles: string[];
-  detectionSignals: string[];
-} {
-  return detectBrandsInPost({
-    ownerUsername: '',  // not stored per-post; owner exclusion is best-effort
-    caption: post.caption || '',
-    hashtags: post.hashtags || [],
-    taggedAccounts: post.tagged_accounts || [],
-    url: '',
-    type: post.post_type || 'unknown',
-  });
-}
+function redetectBrandsFromStoredPost(post: StoredPost): string[] {
+  if (!post.is_sponsored) return [];
 
-/**
- * Recalculates brand fields for a creator's full set of posts.
- * Also updates is_sponsored and sponsor_signals on each post in the DB.
- */
-async function recalculateAndUpdatePosts(posts: StoredPost[], dryRun: boolean): Promise<{
-  detectedBrands: string[];
-  sponsoredPostCount: number;
-  brandPartnershipCount: number;
-}> {
-  const allBrands = new Set<string>();
-  let sponsoredCount = 0;
+  const brands = new Set<string>();
+  const caption = post.caption || '';
 
-  for (const post of posts) {
-    const detection = redetectFromStoredPost(post);
-
-    if (detection.isSponsoredContent) {
-      sponsoredCount++;
-      detection.brandHandles.forEach(b => allBrands.add(b));
-    }
-
-    // Update each post's own fields if anything changed
-    const sponsoredChanged = post.is_sponsored !== detection.isSponsoredContent;
-    const brandsChanged = JSON.stringify((post.detected_brands || []).sort()) !==
-      JSON.stringify(detection.brandHandles.sort());
-
-    if (!dryRun && (sponsoredChanged || brandsChanged)) {
-      const { error } = await supabase
-        .from('creator_posts')
-        .update({
-          is_sponsored: detection.isSponsoredContent,
-          sponsor_signals: detection.detectionSignals,
-          detected_brands: detection.brandHandles,
-        })
-        .eq('id', post.id);
-
-      if (error) {
-        console.error(`Failed to update post ${post.id}:`, error.message);
-      }
+  // @mentions from stored caption
+  const mentionRegex = /@([a-zA-Z0-9._]+)/g;
+  let match;
+  while ((match = mentionRegex.exec(caption)) !== null) {
+    const handle = match[1].toLowerCase();
+    if (isLikelyBrand(handle)) {
+      brands.add(handle);
     }
   }
 
+  // tagged_accounts stored from Apify taggedUsers
+  const taggedAccounts = Array.isArray(post.tagged_accounts) ? post.tagged_accounts : [];
+  taggedAccounts.forEach(handle => {
+    if (typeof handle === 'string') {
+      const clean = handle.toLowerCase().replace('@', '');
+      if (isLikelyBrand(clean)) {
+        brands.add(clean);
+      }
+    }
+  });
+
+  return Array.from(brands);
+}
+
+/**
+ * Recalculate enrichment_data.detected_brands from a set of reprocessed posts.
+ * Only touches the brand-related fields — other metrics (engagement, hashtags etc.)
+ * are left exactly as they are.
+ */
+function recalculateBrandFields(posts: StoredPost[]): {
+  detected_brands: string[];
+  sponsored_posts_count: number;
+  brand_partnership_count: number;
+} {
+  const sponsoredPosts = posts.filter(p => p.is_sponsored);
+  const allBrands = new Set(sponsoredPosts.flatMap(p => redetectBrandsFromStoredPost(p)));
+
   return {
-    detectedBrands: Array.from(allBrands),
-    sponsoredPostCount: sponsoredCount,
-    brandPartnershipCount: allBrands.size,
+    detected_brands: Array.from(allBrands),
+    sponsored_posts_count: sponsoredPosts.length,
+    brand_partnership_count: allBrands.size,
   };
 }
 
@@ -135,7 +119,7 @@ export async function POST(request: NextRequest) {
     let updatedCount = 0;
     let skippedCount = 0;
 
-    // 2. For each profile, load posts and re-detect using shared lib
+    // 2. For each profile, load stored posts and re-detect
     for (const profile of profiles) {
       const { data: rawPosts, error: postsError } = await supabase
         .from('creator_posts')
@@ -153,13 +137,14 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      const existingBrands: string[] = profile.enrichment_data?.detected_brands || [];
+      // What was stored before
+      const existingBrands: string[] =
+        profile.enrichment_data?.detected_brands || [];
 
-      // Re-detect using detectBrandsInPost() and update post-level fields
-      const newBrandFields = await recalculateAndUpdatePosts(posts, dryRun);
-      const newBrands = newBrandFields.detectedBrands;
+      // What the improved filter produces
+      const newBrandFields = recalculateBrandFields(posts);
+      const newBrands = newBrandFields.detected_brands;
 
-      const added = newBrands.filter(b => !existingBrands.includes(b));
       const removed = existingBrands.filter(b => !newBrands.includes(b));
       const kept = existingBrands.filter(b => newBrands.includes(b));
 
@@ -168,19 +153,18 @@ export async function POST(request: NextRequest) {
         socialProfileId: profile.id,
         before: existingBrands,
         after: newBrands,
-        added,
         removed,
         kept,
-        sponsoredPostCount: newBrandFields.sponsoredPostCount,
+        sponsoredPostCount: newBrandFields.sponsored_posts_count,
       });
 
-      // Update enrichment_data on social_profiles
+      // 3. Write back unless dry run
       if (!dryRun) {
         const updatedEnrichmentData = {
           ...(profile.enrichment_data || {}),
-          detected_brands: newBrands,
-          sponsored_posts_count: newBrandFields.sponsoredPostCount,
-          brand_partnership_count: newBrandFields.brandPartnershipCount,
+          detected_brands: newBrandFields.detected_brands,
+          sponsored_posts_count: newBrandFields.sponsored_posts_count,
+          brand_partnership_count: newBrandFields.brand_partnership_count,
         };
 
         const { error: updateError } = await supabase
@@ -196,10 +180,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Summary
+    // 4. Summary stats
     const totalBrandsBefore = results.reduce((s, r) => s + r.before.length, 0);
     const totalBrandsAfter = results.reduce((s, r) => s + r.after.length, 0);
-    const totalAdded = results.reduce((s, r) => s + r.added.length, 0);
     const totalRemoved = results.reduce((s, r) => s + r.removed.length, 0);
 
     return NextResponse.json({
@@ -210,18 +193,18 @@ export async function POST(request: NextRequest) {
       summary: {
         totalBrandsBefore,
         totalBrandsAfter,
-        totalAdded,
         totalRemoved,
-        changePercent: totalBrandsBefore > 0
-          ? Math.round(((totalBrandsAfter - totalBrandsBefore) / totalBrandsBefore) * 100)
-          : 0,
+        reductionPercent:
+          totalBrandsBefore > 0
+            ? Math.round((totalRemoved / totalBrandsBefore) * 100)
+            : 0,
       },
+      // Per-creator detail — useful for spot-checking results
       results: results.map(r => ({
         handle: r.handle,
         sponsoredPostCount: r.sponsoredPostCount,
         before: r.before,
         after: r.after,
-        added: r.added,
         removed: r.removed,
         kept: r.kept,
       })),
