@@ -23,7 +23,9 @@ export async function GET(request: NextRequest) {
     if (status) {
       query = query.eq('status', status);
     }
-
+ // Exclude zero-follower accounts — likely private accounts or false positives
+ query = query.gt('follower_count', 500);
+ 
     // Sorting
     query = query.order(sortBy, { ascending: sortDir === 'asc' });
 
