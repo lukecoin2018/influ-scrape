@@ -8,23 +8,29 @@ const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 function extractHashtags(caption: string): string[] {
+  // Matches ASCII and accented characters (covers European languages)
   const matches = caption.match(/#[\w\u00C0-\u024F]+/g) || [];
   return [...new Set(matches.map(h => h.slice(1).toLowerCase()))];
 }
 
 function extractMentions(caption: string): string[] {
+  // Extended to handle accented characters in handles (e.g. @L'Oréal)
   const matches = caption.match(/@[\w.\u00C0-\u024F'-]+/g) || [];
   return [...new Set(matches.map(m => m.slice(1).toLowerCase()))];
 }
 
 function mapInstagramPost(post: any, socialProfileId: string) {
   const caption = post.caption || '';
+
+  // Hashtags: prefer Apify's parsed array, fall back to extracting from caption.
+  // Apify returns hashtags without the # prefix in the array.
   const hashtagsFromApify = Array.isArray(post.hashtags)
     ? post.hashtags.map((h: any) => (typeof h === 'string' ? h : h.name || '')).filter(Boolean).map((h: string) => h.toLowerCase().replace(/^#/, ''))
     : [];
   const hashtagsFromCaption = extractHashtags(caption);
   const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
 
+  // Tagged accounts: merge Apify's taggedUsers with @mentions extracted from caption.
   const taggedFromApify = (post.taggedUsers || [])
     .map((u: any) => (typeof u === 'string' ? u : u.username || u.name || ''))
     .filter(Boolean)
@@ -32,6 +38,9 @@ function mapInstagramPost(post: any, socialProfileId: string) {
   const mentionsFromCaption = extractMentions(caption);
   const taggedAccounts = [...new Set([...taggedFromApify, ...mentionsFromCaption])];
 
+  // Run brand detection using the shared lib — NOT an inline function.
+  // This ensures future scrapes use exactly the same multilingual detection
+  // logic as the DB re-run scripts.
   const ownerUsername = post.ownerUsername || post.owner?.username || '';
   const detection = detectBrandsInPost({
     ownerUsername,
@@ -70,6 +79,8 @@ function mapInstagramPost(post: any, socialProfileId: string) {
 
 function mapTikTokPost(post: any, socialProfileId: string) {
   const caption = post.text || post.desc || '';
+
+  // TikTok: merge Apify's hashtags array with caption extraction
   const hashtagsFromApify = (post.hashtags || [])
     .map((h: any) => (typeof h === 'string' ? h : h.name || ''))
     .filter(Boolean)
@@ -112,75 +123,6 @@ function mapTikTokPost(post: any, socialProfileId: string) {
     detected_brands: detection.brandHandles,
   };
 }
-
-// ── Brand upsert ──────────────────────────────────────────────────────────────
-
-/**
- * Saves detected brand handles to the brands table.
- * Uses upsert on instagram_handle so re-enriching a creator won't
- * create duplicate brand records — it just increments the partnership count.
- *
- * No Apify profile lookup here — that would be too slow per creator.
- * Full brand profile enrichment (follower count, bio etc.) happens when
- * Sponsorship Discovery runs, or can be triggered separately.
- */
-async function saveBrandsToTable(
-  brandHandles: string[],
-  creatorFollowerCount: number
-): Promise<void> {
-  if (brandHandles.length === 0) return;
-
-  for (const handle of brandHandles) {
-    // Check if brand already exists
-    const { data: existing } = await supabase
-      .from('brands')
-      .select('id, total_partnerships_detected, avg_partner_follower_count, min_partner_follower_count, max_partner_follower_count')
-      .eq('instagram_handle', handle)
-      .single();
-
-    if (existing) {
-      // Brand exists — increment partnership count and update follower stats
-      const currentTotal = existing.total_partnerships_detected || 0;
-      const currentAvg = existing.avg_partner_follower_count || 0;
-      const currentMin = existing.min_partner_follower_count || creatorFollowerCount;
-      const currentMax = existing.max_partner_follower_count || creatorFollowerCount;
-
-      const newTotal = currentTotal + 1;
-      const newAvg = Math.round((currentAvg * currentTotal + creatorFollowerCount) / newTotal);
-
-      await supabase
-        .from('brands')
-        .update({
-          total_partnerships_detected: newTotal,
-          avg_partner_follower_count: newAvg,
-          min_partner_follower_count: Math.min(currentMin, creatorFollowerCount),
-          max_partner_follower_count: Math.max(currentMax, creatorFollowerCount),
-          last_updated_at: new Date().toISOString(),
-        })
-        .eq('id', existing.id);
-    } else {
-      // New brand — create minimal record. Profile details (bio, follower count
-      // etc.) will be filled in when Sponsorship Discovery scrapes this brand,
-      // or when a dedicated brand enrichment pass runs.
-      await supabase
-        .from('brands')
-        .insert({
-          instagram_handle: handle,
-          profile_url: `https://instagram.com/${handle}`,
-          total_partnerships_detected: 1,
-          avg_partner_follower_count: creatorFollowerCount,
-          min_partner_follower_count: creatorFollowerCount,
-          max_partner_follower_count: creatorFollowerCount,
-          data_source: 'enrich_pipeline',
-          first_detected_at: new Date().toISOString(),
-          last_updated_at: new Date().toISOString(),
-          status: 'detected',
-        });
-    }
-  }
-}
-
-// ── Enrichment metrics ────────────────────────────────────────────────────────
 
 function calculateEnrichmentData(posts: any[], followerCount: number) {
   if (!posts.length) return null;
@@ -262,7 +204,9 @@ function calculateEnrichmentData(posts: any[], followerCount: number) {
 async function pollRun(runId: string): Promise<any> {
   while (true) {
     await new Promise(r => setTimeout(r, 3000));
-    const res = await fetch(`${APIFY_API_BASE}/actor-runs/${runId}?token=${APIFY_TOKEN}`);
+    const res = await fetch(
+      `${APIFY_API_BASE}/actor-runs/${runId}?token=${APIFY_TOKEN}`
+    );
     const data = await res.json();
     const status = data.data?.status;
     if (status === 'SUCCEEDED') return data.data;
@@ -362,19 +306,6 @@ export async function POST(request: NextRequest) {
       if (error) console.error(`Failed to save post ${post.post_id}:`, error.message);
     }
 
-    // 4.5 Save detected brands to brands table
-    // Collects all unique brand handles from sponsored posts and upserts them
-    // into the brands table so they appear in the Brands database view.
-    const allBrandHandles = [
-      ...new Set(
-        mappedPosts
-          .filter(p => p.is_sponsored)
-          .flatMap(p => p.detected_brands || [])
-      )
-    ];
-    await saveBrandsToTable(allBrandHandles, followerCount);
-    console.log(`Saved ${allBrandHandles.length} brand handles for ${handle}`);
-
     // 5. Calculate enrichment metrics
     const enrichmentData = calculateEnrichmentData(mappedPosts, followerCount);
 
@@ -398,7 +329,6 @@ export async function POST(request: NextRequest) {
       platform,
       postsFound: rawPosts.length,
       postsSaved: mappedPosts.length,
-      brandsFound: allBrandHandles.length,
       enrichmentData,
     });
 
