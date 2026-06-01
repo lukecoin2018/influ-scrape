@@ -96,9 +96,11 @@ export async function GET(request: Request) {
   let skipped = 0;
   let failed = 0;
   const byCountry: Record<string, number> = {};
+  const debug: Array<{ handle: string; country: string | null; city: string | null; confidence: number | null; status: 'updated' | 'skipped' | 'failed' }> = [];
 
   for (let i = 0; i < profiles.length; i++) {
     const profile = profiles[i];
+    const handle = profile.handle as string;
 
     const tryExtract = async (): Promise<LocationResult | null> => {
       try {
@@ -118,8 +120,10 @@ export async function GET(request: Request) {
 
     if (!result) {
       failed++;
+      debug.push({ handle, country: null, city: null, confidence: null, status: 'failed' });
     } else if (result.confidence < 0.7 || !result.country) {
       skipped++;
+      debug.push({ handle, country: result.country, city: result.city, confidence: result.confidence, status: 'skipped' });
     } else {
       if (!dryRun) {
         await supabase
@@ -143,6 +147,7 @@ export async function GET(request: Request) {
 
       updated++;
       byCountry[result.country] = (byCountry[result.country] || 0) + 1;
+      debug.push({ handle, country: result.country, city: result.city, confidence: result.confidence, status: 'updated' });
     }
 
     // 2s delay between creators (skip after last)
@@ -158,5 +163,6 @@ export async function GET(request: Request) {
     total: profiles.length,
     byCountry,
     dryRun,
+    debug,
   });
 }

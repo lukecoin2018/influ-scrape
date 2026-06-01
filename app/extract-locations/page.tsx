@@ -2,12 +2,21 @@
 
 import { useState } from 'react';
 
+interface DebugRow {
+  handle: string;
+  country: string | null;
+  city: string | null;
+  confidence: number | null;
+  status: 'updated' | 'skipped' | 'failed';
+}
+
 interface ChunkResult {
   updated: number;
   skipped: number;
   failed: number;
   total: number;
   byCountry: Record<string, number>;
+  debug?: DebugRow[];
 }
 
 interface AggResult {
@@ -16,6 +25,7 @@ interface AggResult {
   failed: number;
   processed: number;
   byCountry: Record<string, number>;
+  debugRows: DebugRow[];
 }
 
 const CHUNK_SIZE = 20;
@@ -73,6 +83,7 @@ export default function ExtractLocationsPage() {
           failed: result.failed,
           processed: result.total,
           byCountry: result.byCountry,
+          debugRows: result.debug ?? [],
         });
       }
     } catch (err) {
@@ -95,6 +106,7 @@ export default function ExtractLocationsPage() {
           failed: result.failed,
           processed: result.total,
           byCountry: result.byCountry,
+          debugRows: result.debug ?? [],
         });
       }
     } catch (err) {
@@ -119,13 +131,14 @@ export default function ExtractLocationsPage() {
         const result = await runSingle(false, CHUNK_SIZE, offset);
         if (result) {
           setAgg((prev) => {
-            const base = prev ?? { updated: 0, skipped: 0, failed: 0, processed: 0, byCountry: {} };
+            const base = prev ?? { updated: 0, skipped: 0, failed: 0, processed: 0, byCountry: {}, debugRows: [] };
             return {
               updated: base.updated + result.updated,
               skipped: base.skipped + result.skipped,
               failed: base.failed + result.failed,
               processed: base.processed + result.total,
               byCountry: mergeCountries(base.byCountry, result.byCountry),
+              debugRows: [...base.debugRows, ...(result.debug ?? [])],
             };
           });
           if (result.total < CHUNK_SIZE) {
@@ -285,6 +298,44 @@ export default function ExtractLocationsPage() {
                       <tr key={country} className="border-b border-gray-800">
                         <td className="py-2">{country}</td>
                         <td className="py-2 text-right text-gray-300">{count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {agg.debugRows.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-3">Per-Creator Debug</h2>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-gray-700">
+                      <th className="text-left py-2">Handle</th>
+                      <th className="text-left py-2">Country</th>
+                      <th className="text-left py-2">City</th>
+                      <th className="text-right py-2">Confidence</th>
+                      <th className="text-right py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agg.debugRows.map((row, i) => (
+                      <tr key={i} className="border-b border-gray-800">
+                        <td className="py-1.5 text-gray-300">@{row.handle}</td>
+                        <td className="py-1.5">{row.country ?? <span className="text-gray-600">—</span>}</td>
+                        <td className="py-1.5 text-gray-400">{row.city ?? <span className="text-gray-600">—</span>}</td>
+                        <td className="py-1.5 text-right font-mono text-xs">
+                          {row.confidence !== null ? row.confidence.toFixed(2) : <span className="text-gray-600">—</span>}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                            row.status === 'updated' ? 'bg-green-900 text-green-300' :
+                            row.status === 'skipped' ? 'bg-yellow-900 text-yellow-300' :
+                            'bg-red-900 text-red-300'
+                          }`}>
+                            {row.status}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
