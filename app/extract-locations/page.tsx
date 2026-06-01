@@ -19,7 +19,7 @@ interface AggResult {
 }
 
 const CHUNK_SIZE = 20;
-const BATCH_SIZE = 100; // creators per Full Run click (5 chunks of 20)
+const BATCH_SIZE = 40; // creators per Full Run click (2 chunks of 20)
 
 export default function ExtractLocationsPage() {
   const [running, setRunning] = useState(false);
@@ -38,9 +38,10 @@ export default function ExtractLocationsPage() {
     setNextOffset(0);
   };
 
-  const runSingle = async (dryRun: boolean, limit: number, offset = 0): Promise<ChunkResult | null> => {
+  const runSingle = async (dryRun: boolean, limit: number, offset = 0, random = false): Promise<ChunkResult | null> => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (dryRun) params.set('dryRun', 'true');
+    if (random) params.set('random', 'true');
     const res = await fetch(`/api/extract-locations?${params}`);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -86,7 +87,7 @@ export default function ExtractLocationsPage() {
     reset();
     setRunning(true);
     try {
-      const result = await runSingle(false, 20);
+      const result = await runSingle(false, 20, 0, true); // random=true
       if (result) {
         setAgg({
           updated: result.updated,
@@ -175,7 +176,7 @@ export default function ExtractLocationsPage() {
         <p className="text-gray-400 mb-8 text-sm">
           Uses Claude to extract country/city from AI summaries where{' '}
           <code className="text-gray-300">detected_country</code> is NULL.
-          Each API call processes 20 creators (4 batches of 5).
+          Test Run picks 20 random creators. Full Run processes 40 sequentially per click.
         </p>
 
         <div className="flex gap-3 mb-8 flex-wrap">
@@ -200,7 +201,7 @@ export default function ExtractLocationsPage() {
               disabled={running}
               className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded font-medium text-sm"
             >
-              {nextOffset === 0 ? 'Run 100' : `Run Next 100 (offset ${nextOffset})`}
+              {nextOffset === 0 ? 'Run 40' : `Run Next 40 (offset ${nextOffset})`}
             </button>
           )}
           {/* Reset button shown once a run has started */}
@@ -237,7 +238,7 @@ export default function ExtractLocationsPage() {
 
         {done && !running && (
           <div className="text-green-400 text-sm mb-4">
-            {nextOffset === -1 ? 'Done — no more creators to process.' : `Batch done. Click "Run Next 100" to continue.`}
+            {nextOffset === -1 ? 'Done — no more creators to process.' : `Batch done. Click "Run Next 40" to continue.`}
           </div>
         )}
 

@@ -52,12 +52,37 @@ export async function GET(request: Request) {
   const limit = parseInt(searchParams.get('limit') || '20', 10);
   const offset = parseInt(searchParams.get('offset') || '0', 10);
 
-  const { data: profiles, error } = await supabase
-    .from('social_profiles')
-    .select('id, handle, platform, ai_summary, creator_id')
-    .is('detected_country', null)
-    .not('ai_summary', 'is', null)
-    .range(offset, offset + limit - 1);
+  const random = searchParams.get('random') === 'true';
+
+  let profiles;
+  let error;
+
+  if (random) {
+    // Fetch a larger pool then shuffle in JS (Supabase JS client has no ORDER BY RANDOM())
+    const { data, error: err } = await supabase
+      .from('social_profiles')
+      .select('id, handle, platform, ai_summary, creator_id')
+      .is('detected_country', null)
+      .not('ai_summary', 'is', null)
+      .limit(500);
+    error = err;
+    if (data) {
+      for (let i = data.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [data[i], data[j]] = [data[j], data[i]];
+      }
+      profiles = data.slice(0, limit);
+    }
+  } else {
+    const { data, error: err } = await supabase
+      .from('social_profiles')
+      .select('id, handle, platform, ai_summary, creator_id')
+      .is('detected_country', null)
+      .not('ai_summary', 'is', null)
+      .range(offset, offset + limit - 1);
+    error = err;
+    profiles = data;
+  }
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
