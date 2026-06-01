@@ -19,7 +19,7 @@ interface AggResult {
 }
 
 const CHUNK_SIZE = 20;
-const FULL_RUN_TOTAL = 2316;
+const BATCH_SIZE = 100; // creators per Full Run click (5 chunks of 20)
 
 export default function ExtractLocationsPage() {
   const [running, setRunning] = useState(false);
@@ -27,12 +27,15 @@ export default function ExtractLocationsPage() {
   const [agg, setAgg] = useState<AggResult | null>(null);
   const [chunkErrors, setChunkErrors] = useState<string[]>([]);
   const [done, setDone] = useState(false);
+  // Tracks the next offset for "Run Next 100"
+  const [nextOffset, setNextOffset] = useState(0);
 
   const reset = () => {
     setAgg(null);
     setChunkErrors([]);
     setProgress(null);
     setDone(false);
+    setNextOffset(0);
   };
 
   const runSingle = async (dryRun: boolean, limit: number, offset = 0): Promise<ChunkResult | null> => {
@@ -101,48 +104,59 @@ export default function ExtractLocationsPage() {
     }
   };
 
-  const runFull = async () => {
-    reset();
+  const runBatch = async (startOffset: number) => {
     setRunning(true);
-    setProgress({ done: 0, total: FULL_RUN_TOTAL });
+    setDone(false);
+    setProgress({ done: 0, total: BATCH_SIZE });
 
-    let accumulated: AggResult = { updated: 0, skipped: 0, failed: 0, processed: 0, byCountry: {} };
+    const endOffset = startOffset + BATCH_SIZE;
     const errors: string[] = [];
+    let exhausted = false;
 
-    for (let offset = 0; offset < FULL_RUN_TOTAL; offset += CHUNK_SIZE) {
+    for (let offset = startOffset; offset < endOffset; offset += CHUNK_SIZE) {
       try {
         const result = await runSingle(false, CHUNK_SIZE, offset);
         if (result) {
-          accumulated = {
-            updated: accumulated.updated + result.updated,
-            skipped: accumulated.skipped + result.skipped,
-            failed: accumulated.failed + result.failed,
-            processed: accumulated.processed + result.total,
-            byCountry: mergeCountries(accumulated.byCountry, result.byCountry),
-          };
-          setAgg({ ...accumulated });
-        }
-        // If this chunk returned fewer rows than requested, we've exhausted the table
-        if (!result || result.total < CHUNK_SIZE) {
-          setProgress({ done: FULL_RUN_TOTAL, total: FULL_RUN_TOTAL });
-          break;
+          setAgg((prev) => {
+            const base = prev ?? { updated: 0, skipped: 0, failed: 0, processed: 0, byCountry: {} };
+            return {
+              updated: base.updated + result.updated,
+              skipped: base.skipped + result.skipped,
+              failed: base.failed + result.failed,
+              processed: base.processed + result.total,
+              byCountry: mergeCountries(base.byCountry, result.byCountry),
+            };
+          });
+          if (result.total < CHUNK_SIZE) {
+            exhausted = true;
+            setProgress({ done: BATCH_SIZE, total: BATCH_SIZE });
+            break;
+          }
         }
       } catch (err) {
         const msg = `offset ${offset}: ${err instanceof Error ? err.message : 'Unknown error'}`;
         errors.push(msg);
-        setChunkErrors([...errors]);
+        setChunkErrors((prev) => [...prev, msg]);
       }
 
-      setProgress({ done: Math.min(offset + CHUNK_SIZE, FULL_RUN_TOTAL), total: FULL_RUN_TOTAL });
+      const doneInBatch = offset - startOffset + CHUNK_SIZE;
+      setProgress({ done: Math.min(doneInBatch, BATCH_SIZE), total: BATCH_SIZE });
 
-      // 2s pause between chunks (skip after last)
-      if (offset + CHUNK_SIZE < FULL_RUN_TOTAL) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+      // 3s pause between chunks (skip after last)
+      if (offset + CHUNK_SIZE < endOffset && !exhausted) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
       }
     }
 
+    setNextOffset(exhausted ? -1 : endOffset);
     setRunning(false);
     setDone(true);
+  };
+
+  const runFull = () => {
+    setChunkErrors([]);
+    setProgress(null);
+    runBatch(nextOffset);
   };
 
   const sortedCountries = agg
@@ -164,7 +178,7 @@ export default function ExtractLocationsPage() {
           Each API call processes 20 creators (4 batches of 5).
         </p>
 
-        <div className="flex gap-3 mb-8">
+        <div className="flex gap-3 mb-8 flex-wrap">
           <button
             onClick={runDry}
             disabled={running}
@@ -179,20 +193,33 @@ export default function ExtractLocationsPage() {
           >
             Test Run (20)
           </button>
-          <button
-            onClick={runFull}
-            disabled={running}
-            className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded font-medium text-sm"
-          >
-            Full Run
-          </button>
+          {/* First run: "Run 100" / subsequent: "Run Next 100" */}
+          {nextOffset !== -1 && (
+            <button
+              onClick={runFull}
+              disabled={running}
+              className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded font-medium text-sm"
+            >
+              {nextOffset === 0 ? 'Run 100' : `Run Next 100 (offset ${nextOffset})`}
+            </button>
+          )}
+          {/* Reset button shown once a run has started */}
+          {(agg || nextOffset > 0) && (
+            <button
+              onClick={reset}
+              disabled={running}
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded font-medium text-sm text-gray-400"
+            >
+              Reset
+            </button>
+          )}
         </div>
 
         {/* Progress bar */}
         {running && progress && (
           <div className="mb-6">
             <div className="flex justify-between text-sm text-gray-400 mb-1">
-              <span>Processing {progress.done}/{progress.total}...</span>
+              <span>Processing {progress.done}/{progress.total} in this batch...</span>
               <span>{progressPct}%</span>
             </div>
             <div className="w-full bg-gray-800 rounded-full h-2">
@@ -209,7 +236,9 @@ export default function ExtractLocationsPage() {
         )}
 
         {done && !running && (
-          <div className="text-green-400 text-sm mb-4">Done.</div>
+          <div className="text-green-400 text-sm mb-4">
+            {nextOffset === -1 ? 'Done — no more creators to process.' : `Batch done. Click "Run Next 100" to continue.`}
+          </div>
         )}
 
         {chunkErrors.length > 0 && (
