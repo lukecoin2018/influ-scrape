@@ -2,6 +2,28 @@
 
 import { useState, useEffect, useRef } from 'react';
 
+// ---------------------------------------------------------------------------
+// Location extraction types (mirrors app/api/extract-locations/route.ts)
+// ---------------------------------------------------------------------------
+interface LocChunkResult {
+  updated: number;
+  skipped: number;
+  failed: number;
+  total: number;
+  byCountry: Record<string, number>;
+}
+
+interface LocAgg {
+  updated: number;
+  skipped: number;
+  failed: number;
+  processed: number;
+  byCountry: Record<string, number>;
+}
+
+const LOC_CHUNK = 20;
+const LOC_FULL_TOTAL = 2316;
+
 interface StatusData {
   total: number;
   analyzed: number;
@@ -50,6 +72,13 @@ export default function IntelligencePage() {
   const [currentBatch, setCurrentBatch] = useState(0);
   const [totalBatches, setTotalBatches] = useState(0);
   const resultsEndRef = useRef<HTMLDivElement>(null);
+
+  // Location extraction state
+  const [locRunning, setLocRunning] = useState(false);
+  const [locAgg, setLocAgg] = useState<LocAgg | null>(null);
+  const [locProgress, setLocProgress] = useState<{ done: number; total: number } | null>(null);
+  const [locErrors, setLocErrors] = useState<string[]>([]);
+  const [locDone, setLocDone] = useState(false);
 
   const fetchStatus = async () => {
     setLoadingStatus(true);
@@ -113,6 +142,80 @@ export default function IntelligencePage() {
       setCurrentBatch(0);
       setTotalBatches(0);
     }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Location extraction helpers
+  // ---------------------------------------------------------------------------
+  const locMergeCountries = (
+    base: Record<string, number>,
+    inc: Record<string, number>
+  ): Record<string, number> => {
+    const merged = { ...base };
+    for (const [c, n] of Object.entries(inc)) merged[c] = (merged[c] || 0) + n;
+    return merged;
+  };
+
+  const locFetchChunk = async (
+    dryRun: boolean,
+    limit: number,
+    offset: number
+  ): Promise<LocChunkResult> => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (dryRun) params.set('dryRun', 'true');
+    const res = await fetch(`/api/extract-locations?${params}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  };
+
+  const runLocDry = async () => {
+    setLocAgg(null); setLocErrors([]); setLocProgress(null); setLocDone(false);
+    setLocRunning(true);
+    try {
+      const r = await locFetchChunk(true, 10, 0);
+      setLocAgg({ updated: r.updated, skipped: r.skipped, failed: r.failed, processed: r.total, byCountry: r.byCountry });
+    } catch (err) {
+      setLocErrors([err instanceof Error ? err.message : 'Unknown error']);
+    } finally {
+      setLocRunning(false); setLocDone(true);
+    }
+  };
+
+  const runLocTest = async () => {
+    setLocAgg(null); setLocErrors([]); setLocProgress(null); setLocDone(false);
+    setLocRunning(true);
+    try {
+      const r = await locFetchChunk(false, 20, 0);
+      setLocAgg({ updated: r.updated, skipped: r.skipped, failed: r.failed, processed: r.total, byCountry: r.byCountry });
+    } catch (err) {
+      setLocErrors([err instanceof Error ? err.message : 'Unknown error']);
+    } finally {
+      setLocRunning(false); setLocDone(true);
+    }
+  };
+
+  const runLocFull = async () => {
+    setLocAgg(null); setLocErrors([]); setLocProgress({ done: 0, total: LOC_FULL_TOTAL }); setLocDone(false);
+    setLocRunning(true);
+    let acc: LocAgg = { updated: 0, skipped: 0, failed: 0, processed: 0, byCountry: {} };
+    const errors: string[] = [];
+    for (let offset = 0; offset < LOC_FULL_TOTAL; offset += LOC_CHUNK) {
+      try {
+        const r = await locFetchChunk(false, LOC_CHUNK, offset);
+        acc = { updated: acc.updated + r.updated, skipped: acc.skipped + r.skipped, failed: acc.failed + r.failed, processed: acc.processed + r.total, byCountry: locMergeCountries(acc.byCountry, r.byCountry) };
+        setLocAgg({ ...acc });
+        if (!r || r.total < LOC_CHUNK) { setLocProgress({ done: LOC_FULL_TOTAL, total: LOC_FULL_TOTAL }); break; }
+      } catch (err) {
+        const msg = `offset ${offset}: ${err instanceof Error ? err.message : 'Unknown error'}`;
+        errors.push(msg); setLocErrors([...errors]);
+      }
+      setLocProgress({ done: Math.min(offset + LOC_CHUNK, LOC_FULL_TOTAL), total: LOC_FULL_TOTAL });
+      if (offset + LOC_CHUNK < LOC_FULL_TOTAL) await new Promise((r) => setTimeout(r, 2000));
+    }
+    setLocRunning(false); setLocDone(true);
   };
 
   const locationDetected = (status?.with_location ?? 0);
@@ -426,6 +529,140 @@ export default function IntelligencePage() {
             )}
           </div>
         </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Location Extraction Section                                         */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="mt-8">
+          <div className="mb-4">
+            <h2 className="text-2xl font-bold text-slate-900 mb-1">AI Location Extraction</h2>
+            <p className="text-slate-600 text-sm">
+              Uses Claude to extract country/city from AI summaries for creators still missing{' '}
+              <code className="text-slate-700 bg-slate-100 px-1 rounded">detected_country</code>.
+              Each API call processes 20 creators (4 × 5 in parallel, 1.5 s gap).
+            </p>
+          </div>
+
+          {/* Missing country stat */}
+          {status && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 shadow-sm flex items-center gap-6">
+              <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-center min-w-[100px]">
+                <div className="text-2xl font-bold text-amber-700">
+                  {(status.total - locationDetected).toLocaleString()}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">Missing country</div>
+              </div>
+              <div className="text-sm text-slate-500">
+                {locationDetected.toLocaleString()} of {status.total.toLocaleString()} profiles already have a detected country.
+              </div>
+            </div>
+          )}
+
+          {/* Buttons */}
+          <div className="flex gap-3 mb-4">
+            <button
+              onClick={runLocDry}
+              disabled={locRunning}
+              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-700 rounded-lg font-medium text-sm transition-colors"
+            >
+              Dry Run (10)
+            </button>
+            <button
+              onClick={runLocTest}
+              disabled={locRunning}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg font-medium text-sm transition-colors"
+            >
+              Test Run (20)
+            </button>
+            <button
+              onClick={runLocFull}
+              disabled={locRunning}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg font-medium text-sm transition-colors"
+            >
+              Full Run
+            </button>
+          </div>
+
+          {/* Progress bar */}
+          {locRunning && locProgress && (
+            <div className="mb-4">
+              <div className="flex justify-between text-xs text-slate-500 mb-1">
+                <span>Processing {locProgress.done}/{locProgress.total}…</span>
+                <span>{Math.round((locProgress.done / locProgress.total) * 100)}%</span>
+              </div>
+              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.round((locProgress.done / locProgress.total) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {locRunning && !locProgress && (
+            <div className="text-sm text-slate-500 animate-pulse mb-4">Running…</div>
+          )}
+
+          {locDone && !locRunning && (
+            <div className="text-sm text-green-600 font-medium mb-4">Done.</div>
+          )}
+
+          {locErrors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-700 space-y-0.5">
+              <div className="font-semibold mb-1">Chunk errors (run continued):</div>
+              {locErrors.map((e, i) => <div key={i}>{e}</div>)}
+            </div>
+          )}
+
+          {/* Results */}
+          {locAgg && (
+            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+              <div className="grid grid-cols-3 gap-4 mb-5">
+                <StatCard label="Updated" value={locAgg.updated} highlight />
+                <StatCard label="Skipped (low conf.)" value={locAgg.skipped} />
+                <StatCard label="Failed" value={locAgg.failed} />
+              </div>
+              <p className="text-xs text-slate-400 mb-4">
+                {locAgg.processed} profiles processed so far.
+              </p>
+
+              {Object.keys(locAgg.byCountry).length > 0 && (
+                <>
+                  <h3 className="text-sm font-semibold text-slate-700 mb-2">Country Breakdown</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-100 bg-slate-50">
+                          <th className="text-left px-3 py-2 font-semibold text-slate-600">Country</th>
+                          <th className="text-right px-3 py-2 font-semibold text-slate-600">Count</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(locAgg.byCountry)
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([country, count]) => (
+                            <tr key={country} className="border-b border-slate-50 hover:bg-slate-50">
+                              <td className="px-3 py-2 text-slate-700">{country}</td>
+                              <td className="px-3 py-2 text-right text-slate-500">{count}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {!locAgg && !locRunning && (
+            <div className="bg-white rounded-xl border border-slate-200 p-10 shadow-sm text-center text-slate-400">
+              <div className="text-3xl mb-2">📍</div>
+              <p className="font-medium text-slate-600 mb-1">Ready to extract locations</p>
+              <p className="text-sm">Requires <code className="bg-slate-100 px-1 rounded">ai_summary</code> to be set — run Intelligence Analysis first if needed.</p>
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
