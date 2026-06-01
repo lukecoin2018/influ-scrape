@@ -71,52 +71,58 @@ export async function GET(request: Request) {
   let skipped = 0;
   let failed = 0;
   const byCountry: Record<string, number> = {};
-  const batchSize = 5;
 
-  for (let i = 0; i < profiles.length; i += batchSize) {
-    const batch = profiles.slice(i, i + batchSize);
+  for (let i = 0; i < profiles.length; i++) {
+    const profile = profiles[i];
 
-    await Promise.all(
-      batch.map(async (profile) => {
+    const tryExtract = async (): Promise<LocationResult | null> => {
+      try {
+        return await extractLocationFromSummary(profile.ai_summary as string);
+      } catch {
+        // Wait 5s and retry once
+        await new Promise((resolve) => setTimeout(resolve, 5000));
         try {
-          const result = await extractLocationFromSummary(profile.ai_summary as string);
-
-          if (result.confidence < 0.7 || !result.country) {
-            skipped++;
-            return;
-          }
-
-          if (!dryRun) {
-            await supabase
-              .from('social_profiles')
-              .update({
-                detected_country: result.country,
-                detected_city: result.city || null,
-              })
-              .eq('id', profile.id);
-
-            if (profile.creator_id) {
-              await supabase
-                .from('creators')
-                .update({
-                  country: result.country,
-                  city: result.city || null,
-                })
-                .eq('id', profile.creator_id);
-            }
-          }
-
-          updated++;
-          byCountry[result.country] = (byCountry[result.country] || 0) + 1;
+          return await extractLocationFromSummary(profile.ai_summary as string);
         } catch {
-          failed++;
+          return null;
         }
-      })
-    );
+      }
+    };
 
-    // 1.5s delay between batches (skip after last batch)
-    if (i + batchSize < profiles.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    const result = await tryExtract();
+
+    if (!result) {
+      failed++;
+    } else if (result.confidence < 0.7 || !result.country) {
+      skipped++;
+    } else {
+      if (!dryRun) {
+        await supabase
+          .from('social_profiles')
+          .update({
+            detected_country: result.country,
+            detected_city: result.city || null,
+          })
+          .eq('id', profile.id);
+
+        if (profile.creator_id) {
+          await supabase
+            .from('creators')
+            .update({
+              country: result.country,
+              city: result.city || null,
+            })
+            .eq('id', profile.creator_id);
+        }
+      }
+
+      updated++;
+      byCountry[result.country] = (byCountry[result.country] || 0) + 1;
+    }
+
+    // 2s delay between creators (skip after last)
+    if (i < profiles.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   }
 
