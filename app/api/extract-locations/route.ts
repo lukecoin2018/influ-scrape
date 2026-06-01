@@ -49,14 +49,15 @@ async function extractLocationFromSummary(summary: string): Promise<LocationResu
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const dryRun = searchParams.get('dryRun') === 'true';
-  const limit = parseInt(searchParams.get('limit') || '2316', 10);
+  const limit = parseInt(searchParams.get('limit') || '20', 10);
+  const offset = parseInt(searchParams.get('offset') || '0', 10);
 
   const { data: profiles, error } = await supabase
     .from('social_profiles')
     .select('id, handle, platform, ai_summary, creator_id')
     .is('detected_country', null)
     .not('ai_summary', 'is', null)
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -70,7 +71,7 @@ export async function GET(request: Request) {
   let skipped = 0;
   let failed = 0;
   const byCountry: Record<string, number> = {};
-  const batchSize = 10;
+  const batchSize = 5;
 
   for (let i = 0; i < profiles.length; i += batchSize) {
     const batch = profiles.slice(i, i + batchSize);
@@ -113,9 +114,9 @@ export async function GET(request: Request) {
       })
     );
 
-    // Delay between batches (skip after last batch)
+    // 1.5s delay between batches (skip after last batch)
     if (i + batchSize < profiles.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
 
