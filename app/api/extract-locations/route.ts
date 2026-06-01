@@ -26,7 +26,7 @@ async function extractLocationFromSummary(summary: string): Promise<LocationResu
       messages: [
         {
           role: 'user',
-          content: `Extract country and city from this influencer summary. Return only JSON: {country, city, confidence}. Use full English country names. Confidence 0.9+ = explicitly stated, 0.7-0.9 = strongly implied, below 0.7 set to null.\n\n${summary}`,
+          content: `Extract country and city from this influencer summary. Return only JSON: {country, city, confidence}. Use full English country names. Confidence 0.9+ = explicitly stated, 0.7-0.9 = strongly implied, below 0.55 set to null. If the summary mentions a language audience (e.g. Italian, Portuguese-speaking, Spanish-speaking), use that as a strong location signal with confidence 0.75.\n\n${summary}`,
         },
       ],
     }),
@@ -121,7 +121,7 @@ export async function GET(request: Request) {
     if (!result) {
       failed++;
       debug.push({ handle, country: null, city: null, confidence: null, status: 'failed' });
-    } else if (result.confidence < 0.7 || !result.country) {
+    } else if (result.confidence < 0.55 || !result.country) {
       skipped++;
       debug.push({ handle, country: result.country, city: result.city, confidence: result.confidence, status: 'skipped' });
     } else {
