@@ -26,7 +26,7 @@ async function extractLocationFromSummary(summary: string): Promise<LocationResu
       messages: [
         {
           role: 'user',
-          content: `Extract country and city from this influencer summary. Return only JSON: {country, city, confidence}. Use full English country names. Confidence 0.9+ = explicitly stated, 0.7-0.9 = strongly implied, below 0.55 set to null. If the summary mentions a language audience (e.g. Italian, Portuguese-speaking, Spanish-speaking), use that as a strong location signal with confidence 0.75.\n\n${summary}`,
+          content: `Extract country and city from this influencer summary. Return only JSON: {country, city, confidence}. Use full English country names. Confidence 0.9+ = explicitly stated, 0.7-0.9 = strongly implied, below 0.55 set to null. If the summary mentions a language audience (e.g. Italian, Portuguese-speaking, Spanish-speaking), use that as a strong location signal with confidence 0.75. IMPORTANT: Portuguese-speaking does NOT mean Portugal. Brazil has 215 million Portuguese speakers. Only assign Portugal if the summary explicitly mentions Portugal, Lisbon, Porto, or Portuguese cities. If a creator speaks Portuguese without explicit Portugal mention, assign Brazil instead.\n\n${summary}`,
         },
       ],
     }),
