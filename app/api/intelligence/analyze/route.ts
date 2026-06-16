@@ -232,7 +232,7 @@ Write ONLY the summary, no preamble, no labels, no quotes.`;
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 300,
         messages: [{ role: 'user', content: promptText }],
       }),
@@ -262,7 +262,9 @@ Write ONLY the summary, no preamble, no labels, no quotes.`;
   }
 
   if (!response.ok) {
-    throw new Error(`Claude API error: ${response.status}`);
+    const errorBody = await response.text().catch(() => '(could not read body)');
+    console.error(`[Claude API] status=${response.status} body=${errorBody}`);
+    throw new Error(`Claude API error: ${response.status} — ${errorBody}`);
   }
 
   const data = await response.json();
