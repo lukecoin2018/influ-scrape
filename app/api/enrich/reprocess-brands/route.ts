@@ -1,22 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { detectBrandsInPost } from '@/lib/brandDetection';
+import { recalculateCumulativeBrandFields, type StoredPostForBrandAgg } from '@/lib/brandAggregation';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface StoredPost {
-  id: string;
+interface StoredPost extends StoredPostForBrandAgg {
   social_profile_id: string;
-  caption: string | null;
-  hashtags: string[] | null;
-  tagged_accounts: string[] | null;
-  is_sponsored: boolean;
-  sponsor_signals: string[] | null;
-  detected_brands: string[] | null;
   likes_count: number;
   comments_count: number;
   views_count: number;
-  post_type: string;
   posted_at: string | null;
 }
 
@@ -29,79 +21,6 @@ interface CreatorResult {
   removed: string[];
   kept: string[];
   sponsoredPostCount: number;
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * Re-runs full brand detection on a stored post using the shared
- * detectBrandsInPost() from lib/brandDetection.ts.
- *
- * This means re-processing re-evaluates is_sponsored too — so a post that
- * was previously missed due to the old limited signal list gets correctly
- * flagged now.
- */
-function redetectFromStoredPost(post: StoredPost): {
-  isSponsoredContent: boolean;
-  brandHandles: string[];
-  detectionSignals: string[];
-} {
-  return detectBrandsInPost({
-    ownerUsername: '',  // not stored per-post; owner exclusion is best-effort
-    caption: post.caption || '',
-    hashtags: post.hashtags || [],
-    taggedAccounts: post.tagged_accounts || [],
-    url: '',
-    type: post.post_type || 'unknown',
-  });
-}
-
-/**
- * Recalculates brand fields for a creator's full set of posts.
- * Also updates is_sponsored and sponsor_signals on each post in the DB.
- */
-async function recalculateAndUpdatePosts(posts: StoredPost[], dryRun: boolean): Promise<{
-  detectedBrands: string[];
-  sponsoredPostCount: number;
-  brandPartnershipCount: number;
-}> {
-  const allBrands = new Set<string>();
-  let sponsoredCount = 0;
-
-  for (const post of posts) {
-    const detection = redetectFromStoredPost(post);
-
-    if (detection.isSponsoredContent) {
-      sponsoredCount++;
-      detection.brandHandles.forEach(b => allBrands.add(b));
-    }
-
-    // Update each post's own fields if anything changed
-    const sponsoredChanged = post.is_sponsored !== detection.isSponsoredContent;
-    const brandsChanged = JSON.stringify((post.detected_brands || []).sort()) !==
-      JSON.stringify(detection.brandHandles.sort());
-
-    if (!dryRun && (sponsoredChanged || brandsChanged)) {
-      const { error } = await supabase
-        .from('creator_posts')
-        .update({
-          is_sponsored: detection.isSponsoredContent,
-          sponsor_signals: detection.detectionSignals,
-          detected_brands: detection.brandHandles,
-        })
-        .eq('id', post.id);
-
-      if (error) {
-        console.error(`Failed to update post ${post.id}:`, error.message);
-      }
-    }
-  }
-
-  return {
-    detectedBrands: Array.from(allBrands),
-    sponsoredPostCount: sponsoredCount,
-    brandPartnershipCount: allBrands.size,
-  };
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -156,7 +75,7 @@ export async function POST(request: NextRequest) {
       const existingBrands: string[] = profile.enrichment_data?.detected_brands || [];
 
       // Re-detect using detectBrandsInPost() and update post-level fields
-      const newBrandFields = await recalculateAndUpdatePosts(posts, dryRun);
+      const newBrandFields = await recalculateCumulativeBrandFields(posts, { persistPostUpdates: !dryRun });
       const newBrands = newBrandFields.detectedBrands;
 
       const added = newBrands.filter(b => !existingBrands.includes(b));
