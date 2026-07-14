@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getCreatorsNeedingReembedding } from '@/lib/embeddingStaleness';
 
 export async function GET() {
   try {
@@ -28,11 +29,14 @@ export async function GET() {
       c => !c.embedded_at && enrichedCreatorIds.has(c.id)
     ).length || 0;
 
+    const needsReembedding = (await getCreatorsNeedingReembedding()).length;
+
     return NextResponse.json({
       total,
       embedded,
       pending,
       enriched_not_embedded: enrichedNotEmbedded,
+      needs_reembedding: needsReembedding,
     });
   } catch (error: any) {
     console.error('Error fetching embedding status:', error);

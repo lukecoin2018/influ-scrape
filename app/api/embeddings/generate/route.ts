@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getCreatorsNeedingReembedding } from '@/lib/embeddingStaleness';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
@@ -213,6 +214,23 @@ export async function POST(request: NextRequest) {
       for (const c of ordered) {
         const profile = (enrichedProfiles || []).find((p: any) => p.creator_id === c.id);
         creatorIds.push({ id: c.id, handle: profile?.handle || c.display_name || c.id });
+      }
+    } else if (mode === 'needs_reembedding') {
+      const stale = (await getCreatorsNeedingReembedding()).slice(0, batchSize);
+
+      const ids = stale.map(c => c.id);
+      const { data: profiles } = await supabase
+        .from('social_profiles')
+        .select('creator_id, handle')
+        .in('creator_id', ids);
+
+      const handleMap = new Map<string, string>();
+      for (const p of profiles || []) {
+        if (!handleMap.has(p.creator_id)) handleMap.set(p.creator_id, p.handle);
+      }
+
+      for (const c of stale) {
+        creatorIds.push({ id: c.id, handle: handleMap.get(c.id) || c.displayName || c.id });
       }
     } else if (mode === 're_embed') {
       const { data: creators } = await supabase
