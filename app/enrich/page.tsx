@@ -3,12 +3,16 @@
 import { useState, useEffect } from 'react';
 
 type Platform = 'instagram' | 'tiktok';
-type Mode = 'not_enriched' | 'featured_first' | 'specific';
+type Mode = 'not_enriched' | 'featured_first' | 'stale_first' | 'specific';
 
 interface EnrichStatus {
-  instagram: { total: number; enriched: number; pending: number };
-  tiktok: { total: number; enriched: number; pending: number };
+  instagram: { total: number; enriched: number; pending: number; stale: number };
+  tiktok: { total: number; enriched: number; pending: number; stale: number };
 }
+
+// Short pause between creators, mirroring the AI Location Extraction runner's
+// pattern of a small delay between items to avoid tripping rate limits.
+const ENRICH_DELAY_MS = 1500;
 
 interface EnrichResult {
   handle: string;
@@ -23,6 +27,7 @@ export default function EnrichPage() {
   const [mode, setMode] = useState<Mode>('not_enriched');
   const [batchSize, setBatchSize] = useState(25);
   const [postsPerCreator, setPostsPerCreator] = useState(15);
+  const [staleDays, setStaleDays] = useState(90);
   const [handlesInput, setHandlesInput] = useState('');
   const [status, setStatus] = useState<EnrichStatus | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -31,13 +36,15 @@ export default function EnrichPage() {
   const [results, setResults] = useState<EnrichResult[]>([]);
   const [progressMessage, setProgressMessage] = useState('');
 
+  // Debounce so the stale badge doesn't refetch on every keystroke
   useEffect(() => {
-    fetchStatus();
-  }, []);
+    const t = setTimeout(() => fetchStatus(staleDays), 300);
+    return () => clearTimeout(t);
+  }, [staleDays]);
 
-  const fetchStatus = async () => {
+  const fetchStatus = async (days: number = staleDays) => {
     try {
-      const res = await fetch('/api/enrich/status');
+      const res = await fetch(`/api/enrich/status?staleDays=${days}`);
       const data = await res.json();
       setStatus(data);
     } catch (err) {
@@ -60,6 +67,7 @@ export default function EnrichPage() {
           platform,
           mode,
           batchSize,
+          staleDays,
           handles: mode === 'specific'
             ? handlesInput.split('\n').map(h => h.trim()).filter(Boolean)
             : [],
@@ -80,10 +88,13 @@ export default function EnrichPage() {
       let enriched = 0;
       let failed = 0;
 
-      // Process one at a time
-      for (const handle of handles) {
+      // Process one at a time, strictly sequential — a single creator failing
+      // (rate limit, scraper error, etc.) never aborts the batch, it's just
+      // logged as a failure and the loop moves on to the next handle.
+      for (let i = 0; i < handles.length; i++) {
+        const handle = handles[i];
         setCurrentHandle(handle);
-        setProgressMessage(`Enriching @${handle}...`);
+        setProgressMessage(`Enriching @${handle} (${i + 1} of ${count})...`);
 
         try {
           const processRes = await fetch('/api/enrich/process', {
@@ -109,6 +120,10 @@ export default function EnrichPage() {
         const remaining = count - enriched - failed;
         setProgress({ enriched, failed, remaining, total: count });
         setProgressMessage(`Enriched ${enriched} of ${count}${failed > 0 ? `, ${failed} failed` : ''}...`);
+
+        if (i < handles.length - 1) {
+          await new Promise(r => setTimeout(r, ENRICH_DELAY_MS));
+        }
       }
 
       setCurrentHandle('');
@@ -216,6 +231,7 @@ export default function EnrichPage() {
               {([
                 { value: 'not_enriched', label: 'Not yet enriched', desc: 'Creators missing post data' },
                 { value: 'featured_first', label: 'Featured first', desc: 'Prioritize featured creators' },
+                { value: 'stale_first', label: 'Stale first (re-enrich)', desc: 'Oldest enriched_at first — adjustable day threshold below' },
                 { value: 'specific', label: 'Specific creators', desc: 'Paste handles below' },
               ] as { value: Mode; label: string; desc: string }[]).map(opt => (
                 <label key={opt.value} className="flex items-start gap-3 cursor-pointer p-3 rounded-lg hover:bg-slate-50">
@@ -227,14 +243,39 @@ export default function EnrichPage() {
                     onChange={() => setMode(opt.value)}
                     className="mt-0.5"
                   />
-                  <div>
+                  <div className="flex-1">
                     <div className="font-medium text-slate-800 text-sm">{opt.label}</div>
                     <div className="text-xs text-slate-500">{opt.desc}</div>
                   </div>
+                  {opt.value === 'stale_first' && status && (
+                    <span className="text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full mt-0.5">
+                      {formatNumber(status[platform].stale)} stale
+                    </span>
+                  )}
                 </label>
               ))}
             </div>
           </div>
+
+          {/* Stale threshold */}
+          {mode === 'stale_first' && (
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Days Threshold
+              </label>
+              <input
+                type="number"
+                value={staleDays}
+                onChange={e => setStaleDays(Math.max(1, parseInt(e.target.value) || 90))}
+                min={1}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
+                disabled={isRunning}
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Profiles last enriched more than {staleDays} day{staleDays === 1 ? '' : 's'} ago are considered stale.
+              </p>
+            </div>
+          )}
 
           {/* Specific handles textarea */}
           {mode === 'specific' && (

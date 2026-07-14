@@ -2,13 +2,14 @@
 
 import { useState, useEffect } from 'react';
 
-type Mode = 'not_embedded' | 'enriched_first' | 're_embed' | 'has_ai_summary' | 'specific';
+type Mode = 'not_embedded' | 'enriched_first' | 'needs_reembedding' | 're_embed' | 'has_ai_summary' | 'specific';
 
 interface EmbedStatus {
   total: number;
   embedded: number;
   pending: number;
   enriched_not_embedded: number;
+  needs_reembedding: number;
 }
 
 interface EmbedResult {
@@ -152,6 +153,7 @@ export default function EmbeddingsPage() {
               {([
                 { value: 'not_embedded', label: 'Not yet embedded', desc: 'Creators without embeddings, highest followers first' },
                 { value: 'enriched_first', label: 'Enriched first', desc: 'Prioritize creators with post data — produces better embeddings' },
+                { value: 'needs_reembedding', label: 'Needs re-embedding (stale)', desc: 'Re-analyzed more recently than their last embedding' },
                 { value: 'has_ai_summary', label: 'Re-embed with AI summary', desc: 'Re-embed creators that have an AI summary — includes language, location & summary for richer search', highlight: true },
                 { value: 're_embed', label: 'Re-embed all', desc: 'Regenerate all existing embeddings' },
                 { value: 'specific', label: 'Specific creators', desc: 'Paste handles below' },
@@ -166,13 +168,18 @@ export default function EmbeddingsPage() {
                     className="mt-0.5 accent-violet-600"
                     disabled={isRunning}
                   />
-                  <div>
+                  <div className="flex-1">
                     <div className={`font-medium text-sm flex items-center gap-2 ${opt.highlight ? 'text-violet-700' : 'text-slate-800'}`}>
                       {opt.label}
                       {opt.highlight && <span className="text-xs bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded font-medium">recommended</span>}
                     </div>
                     <div className="text-xs text-slate-500">{opt.desc}</div>
                   </div>
+                  {opt.value === 'needs_reembedding' && status && (
+                    <span className="text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full mt-0.5">
+                      {status.needs_reembedding.toLocaleString()} stale
+                    </span>
+                  )}
                 </label>
               ))}
             </div>

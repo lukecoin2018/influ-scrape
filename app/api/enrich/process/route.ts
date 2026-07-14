@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { detectBrandsInPost } from '@/lib/brandDetection';
+import { recalculateCumulativeBrandFields, type StoredPostForBrandAgg } from '@/lib/brandAggregation';
+
+const RECENT_POSTS_WINDOW = 15;
 
 const APIFY_API_BASE = 'https://api.apify.com/v2';
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
@@ -182,8 +185,26 @@ async function saveBrandsToTable(
 
 // ── Enrichment metrics ────────────────────────────────────────────────────────
 
-function calculateEnrichmentData(posts: any[], followerCount: number) {
-  if (!posts.length) return null;
+/**
+ * Computes engagement/frequency/content-mix stats from a recent window of
+ * posts (latest RECENT_POSTS_WINDOW by posted_at). Sponsorship/brand fields
+ * are NOT computed here — those are cumulative across all stored posts and
+ * are merged in separately by the caller.
+ */
+function calculateWindowMetrics(posts: any[], followerCount: number) {
+  if (!posts.length) {
+    return {
+      calculated_engagement_rate: 0,
+      avg_likes: 0,
+      avg_comments: 0,
+      avg_views: 0,
+      posting_frequency_per_week: 0,
+      last_post_date: null,
+      days_since_last_post: null,
+      content_mix: {},
+      top_hashtags: [],
+    };
+  }
 
   const totalLikes = posts.reduce((s, p) => s + (p.likes_count || 0), 0);
   const totalComments = posts.reduce((s, p) => s + (p.comments_count || 0), 0);
@@ -240,9 +261,6 @@ function calculateEnrichmentData(posts: any[], followerCount: number) {
     .slice(0, 10)
     .map(([tag]) => tag);
 
-  const sponsoredPosts = posts.filter(p => p.is_sponsored);
-  const allDetectedBrands = [...new Set(sponsoredPosts.flatMap(p => p.detected_brands || []))];
-
   return {
     calculated_engagement_rate: calculatedEngagement,
     avg_likes: avgLikes,
@@ -253,9 +271,6 @@ function calculateEnrichmentData(posts: any[], followerCount: number) {
     days_since_last_post: daysSinceLastPost,
     content_mix: contentMix,
     top_hashtags: topHashtags,
-    sponsored_posts_count: sponsoredPosts.length,
-    detected_brands: allDetectedBrands,
-    brand_partnership_count: allDetectedBrands.length,
   };
 }
 
@@ -375,16 +390,70 @@ export async function POST(request: NextRequest) {
     await saveBrandsToTable(allBrandHandles, followerCount);
     console.log(`Saved ${allBrandHandles.length} brand handles for ${handle}`);
 
-    // 5. Calculate enrichment metrics
-    const enrichmentData = calculateEnrichmentData(mappedPosts, followerCount);
+    // 5. Recalculate enrichment metrics from the database (not the scrape payload)
+    // so stats reflect everything stored for this creator, not just this run.
 
-    // 6. Update social_profiles
+    // 5a. Window stats (engagement, frequency, content mix, hashtags) come from
+    // the latest RECENT_POSTS_WINDOW posts with a known posted_at. Posts with a
+    // NULL posted_at are excluded — Postgres sorts NULLs first on DESC, which
+    // would otherwise corrupt the "most recent" window.
+    const { data: recentPosts, error: recentPostsError } = await supabase
+      .from('creator_posts')
+      .select('likes_count, comments_count, views_count, post_type, hashtags, posted_at')
+      .eq('social_profile_id', socialProfileId)
+      .not('posted_at', 'is', null)
+      .order('posted_at', { ascending: false })
+      .limit(RECENT_POSTS_WINDOW);
+
+    if (recentPostsError) {
+      console.error('Failed to load recent posts for metrics:', recentPostsError.message);
+    }
+
+    // 5b. Cumulative brand/sponsorship fields span ALL stored posts (including
+    // ones with no posted_at) since partnership history never expires. Reuses
+    // the same detection logic as /api/enrich/reprocess-brands so both paths
+    // agree, and refreshes stale is_sponsored/detected_brands on older posts.
+    const { data: allStoredPosts, error: allStoredPostsError } = await supabase
+      .from('creator_posts')
+      .select('id, caption, hashtags, tagged_accounts, is_sponsored, sponsor_signals, detected_brands, post_type')
+      .eq('social_profile_id', socialProfileId);
+
+    if (allStoredPostsError) {
+      console.error('Failed to load stored posts for brand aggregation:', allStoredPostsError.message);
+    }
+
+    const cumulativeBrandFields = await recalculateCumulativeBrandFields(
+      (allStoredPosts || []) as StoredPostForBrandAgg[],
+      { persistPostUpdates: true }
+    );
+
+    // 5c. Total posts stored for this profile (not just what this run scraped).
+    const { count: totalPostsCount, error: countError } = await supabase
+      .from('creator_posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('social_profile_id', socialProfileId);
+
+    if (countError) {
+      console.error('Failed to count stored posts:', countError.message);
+    }
+
+    const windowMetrics = calculateWindowMetrics(recentPosts || [], followerCount);
+    const enrichmentData = (totalPostsCount ?? 0) > 0
+      ? {
+          ...windowMetrics,
+          sponsored_posts_count: cumulativeBrandFields.sponsoredPostCount,
+          detected_brands: cumulativeBrandFields.detectedBrands,
+          brand_partnership_count: cumulativeBrandFields.brandPartnershipCount,
+        }
+      : null;
+
+    // 6. Update social_profiles — enriched_at only advances on this successful pass.
     const { error: updateError } = await supabase
       .from('social_profiles')
       .update({
         enrichment_data: enrichmentData,
         enriched_at: new Date().toISOString(),
-        posts_scraped_count: mappedPosts.length,
+        posts_scraped_count: totalPostsCount ?? 0,
         engagement_rate: enrichmentData?.calculated_engagement_rate ?? null,
       })
       .eq('id', socialProfileId);

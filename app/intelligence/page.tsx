@@ -31,6 +31,7 @@ interface StatusData {
   with_email: number;
   with_location: number;
   with_ai_summary: number;
+  needs_reanalysis: number;
 }
 
 interface ResultRow {
@@ -57,7 +58,7 @@ export default function IntelligencePage() {
   const [loadingStatus, setLoadingStatus] = useState(true);
 
   // Options
-  const [mode, setMode] = useState<'not_analyzed' | 'enriched_first' | 're_analyze_all' | 'missing_ai_summary' | 'specific'>('not_analyzed');
+  const [mode, setMode] = useState<'not_analyzed' | 'enriched_first' | 'needs_reanalysis' | 're_analyze_all' | 'missing_ai_summary' | 'specific'>('not_analyzed');
   const [batchSize, setBatchSize] = useState(50);
   const [doEmails, setDoEmails] = useState(true);
   const [doLanguage, setDoLanguage] = useState(true);
@@ -303,6 +304,7 @@ export default function IntelligencePage() {
                   {[
                     { value: 'not_analyzed', label: 'Not yet analyzed' },
                     { value: 'enriched_first', label: 'Enriched creators first' },
+                    { value: 'needs_reanalysis', label: 'Needs re-analysis (re-enriched)' },
                     { value: 'missing_ai_summary', label: 'Missing AI summary' },
                     { value: 're_analyze_all', label: 'Re-analyze all' },
                     { value: 'specific', label: 'Specific creators' },
@@ -316,7 +318,12 @@ export default function IntelligencePage() {
                         onChange={() => setMode(value as typeof mode)}
                         className="accent-violet-600"
                       />
-                      <span className="text-sm text-slate-700">{label}</span>
+                      <span className="text-sm text-slate-700 flex-1">{label}</span>
+                      {value === 'needs_reanalysis' && status && (
+                        <span className="text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+                          {status.needs_reanalysis.toLocaleString()} ready
+                        </span>
+                      )}
                     </label>
                   ))}
                 </div>

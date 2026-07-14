@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 
 export async function POST(request: NextRequest) {
   try {
-    const { platform, mode, batchSize = 25, handles = [] } = await request.json();
+    const { platform, mode, batchSize = 25, handles = [], staleDays = 90 } = await request.json();
 
     if (!platform) {
       return NextResponse.json({ error: 'platform is required' }, { status: 400 });
@@ -15,6 +15,18 @@ export async function POST(request: NextRequest) {
       resultHandles = handles
         .map((h: string) => h.trim().toLowerCase().replace(/^@/, ''))
         .filter(Boolean);
+    } else if (mode === 'stale_first') {
+      const days = Math.max(1, Number(staleDays) || 90);
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const { data: staleProfiles } = await supabase
+        .from('social_profiles')
+        .select('handle')
+        .eq('platform', platform)
+        .lt('enriched_at', cutoff)
+        .order('enriched_at', { ascending: true })
+        .limit(batchSize);
+
+      resultHandles = (staleProfiles || []).map((p: any) => p.handle);
     } else if (mode === 'featured_first') {
       // Get featured creator IDs first
       const { data: featuredCreators } = await supabase
