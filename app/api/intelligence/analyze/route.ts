@@ -287,10 +287,15 @@ async function saveIntelligence(
     website: string | null;
   }
 ) {
-  // Only include a column in the update if its extraction step actually ran
-  // this pass — a disabled flag must leave the existing stored value alone,
-  // not overwrite it with null. intelligence_data is a single JSONB column,
-  // so it's merged in JS against the current value rather than replaced.
+  // A field is only included in the update when its extraction step both ran
+  // AND actually produced a value. A disabled flag must leave the existing
+  // stored value alone (fixed previously) — but an enabled flag isn't a
+  // license to write null either: bio-based detection finding nothing this
+  // pass (empty bio, no location/language/email signal in the text) does
+  // not mean the creator's real country/language/email is now unknown, so
+  // that case must also preserve whatever's already stored. intelligence_data
+  // is a single JSONB column, so it's merged in JS against the current value
+  // rather than replaced.
   const profileUpdate: Record<string, unknown> = {
     intelligence_updated_at: new Date().toISOString(),
   };
@@ -299,30 +304,40 @@ async function saveIntelligence(
   };
   const mergedIntelligenceData: Record<string, unknown> = { ...(currentIntelligenceData || {}) };
 
-  if (flags.doLanguage) {
-    const detectedLanguage = data.language.primary !== 'unknown' ? data.language.primary : null;
-    profileUpdate.detected_language = detectedLanguage;
-    creatorUpdate.primary_language = detectedLanguage;
+  if (flags.doLanguage && data.language.primary !== 'unknown') {
+    profileUpdate.detected_language = data.language.primary;
+    creatorUpdate.primary_language = data.language.primary;
     mergedIntelligenceData.languages = data.language.all;
   }
 
   if (flags.doLocation) {
-    profileUpdate.detected_country = data.location.country;
-    profileUpdate.detected_city = data.location.city;
-    creatorUpdate.country = data.location.country;
-    creatorUpdate.city = data.location.city;
-    mergedIntelligenceData.location_raw = data.location.raw;
+    // Country and city are independent signals — e.g. a flag emoji resolves
+    // country with no city mentioned. Each is only written when found, so a
+    // miss on one doesn't clear a previously stored value on the other.
+    if (data.location.country) {
+      profileUpdate.detected_country = data.location.country;
+      creatorUpdate.country = data.location.country;
+    }
+    if (data.location.city) {
+      profileUpdate.detected_city = data.location.city;
+      creatorUpdate.city = data.location.city;
+    }
+    if (data.location.raw) {
+      mergedIntelligenceData.location_raw = data.location.raw;
+    }
   }
 
-  if (flags.doEmails) {
-    const email = data.emails[0] || null;
-    profileUpdate.detected_email = email;
-    creatorUpdate.contact_email = email;
+  if (flags.doEmails && data.emails.length > 0) {
+    profileUpdate.detected_email = data.emails[0];
+    creatorUpdate.contact_email = data.emails[0];
     mergedIntelligenceData.emails_found = data.emails;
   }
 
-  // Website has no toggle — always recomputed from bio, safe to always persist.
-  mergedIntelligenceData.website = data.website;
+  // Website has no toggle — always recomputed from bio, but only persisted
+  // when found, for the same "no signal isn't a license to null" reason.
+  if (data.website) {
+    mergedIntelligenceData.website = data.website;
+  }
 
   if (flags.doAI) {
     // Persisted whether generation succeeded or not — a null here (failure)
