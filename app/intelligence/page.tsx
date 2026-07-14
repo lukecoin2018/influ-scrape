@@ -24,6 +24,19 @@ interface LocAgg {
 const LOC_CHUNK = 20;
 const LOC_FULL_TOTAL = 2316;
 
+// Chunk size for /api/intelligence/analyze — each HTTP call must stay well
+// under Vercel's function duration limit and nginx's proxy timeout, so a
+// large run is split into many small requests instead of one huge one.
+//
+// not_analyzed/enriched_first/needs_reanalysis/missing_ai_summary are
+// queue-based: intelligence_updated_at (or ai_summary) is set on every
+// processed row, so each chunk naturally sees the next still-pending batch
+// with no offset needed. re_analyze_all has no natural queue-exit filter and
+// is paginated via an explicit offset; specific mode is paginated by slicing
+// the handle list client-side.
+const ANALYZE_CHUNK = 10;
+const ANALYZE_CHUNK_DELAY_MS = 2000;
+
 interface StatusData {
   total: number;
   analyzed: number;
@@ -70,8 +83,8 @@ export default function IntelligencePage() {
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [currentBatch, setCurrentBatch] = useState(0);
-  const [totalBatches, setTotalBatches] = useState(0);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [chunkErrors, setChunkErrors] = useState<string[]>([]);
   const resultsEndRef = useRef<HTMLDivElement>(null);
 
   // Location extraction state
@@ -101,48 +114,107 @@ export default function IntelligencePage() {
   const handleRun = async () => {
     setRunning(true);
     setError(null);
-    setRunResult(null);
+    setChunkErrors([]);
 
-    const handles = mode === 'specific'
+    const isSpecific = mode === 'specific';
+    let pendingHandles = isSpecific
       ? specificHandles.split(',').map((h) => h.trim().replace(/^@/, '')).filter(Boolean)
       : [];
 
-    // Calculate how many batches to run (for pending count estimation)
-    const pending = status?.pending ?? 0;
-    const batches = Math.ceil(Math.min(pending, batchSize) / batchSize) || 1;
-    setTotalBatches(batches);
-    setCurrentBatch(1);
+    // batchSize is the total the user wants processed this run; requests are
+    // split into ANALYZE_CHUNK-sized calls so no single HTTP request risks a
+    // platform timeout. For specific mode the target is capped to the handle
+    // count, matching the pre-existing (single-request) truncation behavior.
+    const totalTarget = isSpecific ? Math.min(pendingHandles.length, batchSize) : batchSize;
 
-    try {
-      const res = await fetch('/api/intelligence/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode,
-          batchSize,
-          extractEmails: doEmails,
-          detectLanguage: doLanguage,
-          detectLocation: doLocation,
-          generateAISummary: doAI,
-          handles,
-        }),
-      });
+    if (totalTarget === 0) {
+      setError('No handles to process.');
+      setRunning(false);
+      return;
+    }
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || `HTTP ${res.status}`);
+    setProgress({ done: 0, total: totalTarget });
+    setRunResult({ succeeded: 0, failed: 0, total: 0, results: [] });
+
+    // `attempted` drives progress/pagination (how many slots we've asked
+    // for); `processed` is the actual result count. These can differ for
+    // specific mode — e.g. a handle that doesn't exist yields no result row
+    // — so pagination must advance by what was requested, not by what came
+    // back, or a chunk with a few misses would look like "end of data" and
+    // stop the run before the remaining valid handles are processed.
+    let attempted = 0;
+    let processed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let allResults: ResultRow[] = [];
+    const errors: string[] = [];
+    let offset = 0;
+
+    const numChunks = Math.ceil(totalTarget / ANALYZE_CHUNK);
+
+    for (let i = 0; i < numChunks; i++) {
+      const remaining = totalTarget - attempted;
+      if (remaining <= 0) break;
+      const thisChunkSize = Math.min(ANALYZE_CHUNK, remaining);
+      const chunkHandles = isSpecific ? pendingHandles.slice(0, thisChunkSize) : [];
+
+      try {
+        const res = await fetch('/api/intelligence/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode,
+            batchSize: thisChunkSize,
+            offset,
+            extractEmails: doEmails,
+            detectLanguage: doLanguage,
+            detectLocation: doLocation,
+            generateAISummary: doAI,
+            handles: chunkHandles,
+          }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+
+        const data: RunResult = await res.json();
+        const chunkCount = data.results?.length || 0;
+
+        succeeded += data.succeeded || 0;
+        failed += data.failed || 0;
+        allResults = [...allResults, ...(data.results || [])];
+        processed += chunkCount;
+        attempted += thisChunkSize;
+        offset += thisChunkSize;
+
+        setRunResult({ succeeded, failed, total: processed, results: allResults });
+        setProgress({ done: Math.min(attempted, totalTarget), total: totalTarget });
+
+        if (isSpecific) {
+          pendingHandles = pendingHandles.slice(thisChunkSize);
+        } else if (chunkCount === 0 || chunkCount < thisChunkSize) {
+          // Queue-based/offset modes only: fewer came back than requested
+          // means the queue is empty — stop instead of looping through more
+          // empty chunks. Specific mode is bounded by pendingHandles instead,
+          // since an undercount there can be a dedup/not-found result, not
+          // necessarily "nothing left to send".
+          break;
+        }
+      } catch (err) {
+        const msg = `chunk ${i + 1}: ${err instanceof Error ? err.message : 'Unknown error'}`;
+        errors.push(msg);
+        setChunkErrors([...errors]);
       }
 
-      const data: RunResult = await res.json();
-      setRunResult(data);
-      await fetchStatus();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error occurred');
-    } finally {
-      setRunning(false);
-      setCurrentBatch(0);
-      setTotalBatches(0);
+      if (i < numChunks - 1 && attempted < totalTarget) {
+        await new Promise((r) => setTimeout(r, ANALYZE_CHUNK_DELAY_MS));
+      }
     }
+
+    setRunning(false);
+    await fetchStatus();
   };
 
   // ---------------------------------------------------------------------------
@@ -356,6 +428,9 @@ export default function IntelligencePage() {
                 <div className="flex justify-between text-xs text-slate-400 mt-1">
                   <span>5</span><span>200</span>
                 </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  Processed in chunks of {ANALYZE_CHUNK}, {ANALYZE_CHUNK_DELAY_MS / 1000}s apart — a large batch runs as several short requests instead of one long one.
+                </p>
               </div>
 
               {/* Checkboxes */}
@@ -407,21 +482,36 @@ export default function IntelligencePage() {
 
           {/* Results panel */}
           <div className="lg:col-span-2">
-            {running && (
+            {running && progress && (
               <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-4">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-4 h-4 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-sm font-medium text-slate-700">
-                    Processing batch{totalBatches > 1 ? ` ${currentBatch} of ${totalBatches}` : ''}…
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-4 h-4 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-sm font-medium text-slate-700">
+                      Processing {progress.done} of {progress.total}…
+                    </span>
+                  </div>
+                  <span className="text-xs text-slate-500">
+                    {Math.round((progress.done / progress.total) * 100)}%
                   </span>
                 </div>
                 <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-violet-400 rounded-full animate-pulse w-3/4" />
+                  <div
+                    className="h-full bg-violet-400 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+                  />
                 </div>
               </div>
             )}
 
-            {runResult && !running && (
+            {chunkErrors.length > 0 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-700 space-y-0.5">
+                <div className="font-semibold mb-1">Chunk errors (run continued):</div>
+                {chunkErrors.map((e, i) => <div key={i}>{e}</div>)}
+              </div>
+            )}
+
+            {runResult && runResult.total > 0 && (
               <>
                 {/* Summary row */}
                 <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm mb-4">
@@ -525,7 +615,7 @@ export default function IntelligencePage() {
               </>
             )}
 
-            {!runResult && !running && (
+            {(!runResult || runResult.total === 0) && !running && (
               <div className="bg-white rounded-xl border border-slate-200 p-12 shadow-sm text-center text-slate-400">
                 <div className="text-4xl mb-3">🧠</div>
                 <p className="font-medium text-slate-600 mb-1">Ready to analyze</p>

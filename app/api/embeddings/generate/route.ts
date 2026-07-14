@@ -146,7 +146,7 @@ async function saveEmbedding(
 
 export async function POST(request: NextRequest) {
   try {
-    const { mode, batchSize = 50, handles = [] } = await request.json();
+    const { mode, batchSize = 50, offset = 0, handles = [] } = await request.json();
 
     let creatorIds: { id: string; handle: string }[] = [];
 
@@ -233,11 +233,15 @@ export async function POST(request: NextRequest) {
         creatorIds.push({ id: c.id, handle: handleMap.get(c.id) || c.displayName || c.id });
       }
     } else if (mode === 're_embed') {
+      // No natural queue-exit filter (every creator matches every time), so
+      // page through explicitly via offset. `id` breaks ties deterministically
+      // since total_followers alone isn't guaranteed unique.
       const { data: creators } = await supabase
         .from('creators')
         .select('id, display_name')
         .order('total_followers', { ascending: false })
-        .limit(batchSize);
+        .order('id')
+        .range(offset, offset + batchSize - 1);
 
       for (const c of creators || []) {
         creatorIds.push({ id: c.id, handle: c.display_name || c.id });
