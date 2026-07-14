@@ -277,6 +277,8 @@ Write ONLY the summary, no preamble, no labels, no quotes.`;
 async function saveIntelligence(
   socialProfileId: string,
   creatorId: string,
+  currentIntelligenceData: Record<string, unknown> | null,
+  flags: { doEmails: boolean; doLanguage: boolean; doLocation: boolean; doAI: boolean },
   data: {
     language: { primary: string; all: string[] };
     location: { country: string | null; city: string | null; raw: string | null };
@@ -285,34 +287,62 @@ async function saveIntelligence(
     website: string | null;
   }
 ) {
-  await supabase
-    .from('social_profiles')
-    .update({
-      detected_language: data.language.primary !== 'unknown' ? data.language.primary : null,
-      detected_country: data.location.country,
-      detected_city: data.location.city,
-      detected_email: data.emails[0] || null,
-      ai_summary: data.aiSummary,
-      intelligence_data: {
-        languages: data.language.all,
-        location_raw: data.location.raw,
-        emails_found: data.emails,
-        website: data.website,
-      },
-      intelligence_updated_at: new Date().toISOString(),
-    })
-    .eq('id', socialProfileId);
+  // Only include a column in the update if its extraction step actually ran
+  // this pass — a disabled flag must leave the existing stored value alone,
+  // not overwrite it with null. intelligence_data is a single JSONB column,
+  // so it's merged in JS against the current value rather than replaced.
+  const profileUpdate: Record<string, unknown> = {
+    intelligence_updated_at: new Date().toISOString(),
+  };
+  const creatorUpdate: Record<string, unknown> = {
+    ai_embedded: false, // mark as needing re-embed with new intelligence data
+  };
+  const mergedIntelligenceData: Record<string, unknown> = { ...(currentIntelligenceData || {}) };
 
-  await supabase
+  if (flags.doLanguage) {
+    const detectedLanguage = data.language.primary !== 'unknown' ? data.language.primary : null;
+    profileUpdate.detected_language = detectedLanguage;
+    creatorUpdate.primary_language = detectedLanguage;
+    mergedIntelligenceData.languages = data.language.all;
+  }
+
+  if (flags.doLocation) {
+    profileUpdate.detected_country = data.location.country;
+    profileUpdate.detected_city = data.location.city;
+    creatorUpdate.country = data.location.country;
+    creatorUpdate.city = data.location.city;
+    mergedIntelligenceData.location_raw = data.location.raw;
+  }
+
+  if (flags.doEmails) {
+    const email = data.emails[0] || null;
+    profileUpdate.detected_email = email;
+    creatorUpdate.contact_email = email;
+    mergedIntelligenceData.emails_found = data.emails;
+  }
+
+  // Website has no toggle — always recomputed from bio, safe to always persist.
+  mergedIntelligenceData.website = data.website;
+
+  if (flags.doAI) {
+    // Persisted whether generation succeeded or not — a null here (failure)
+    // intentionally marks the summary as pending again for the next run.
+    profileUpdate.ai_summary = data.aiSummary;
+  }
+
+  profileUpdate.intelligence_data = mergedIntelligenceData;
+
+  const { error: profileError } = await supabase
+    .from('social_profiles')
+    .update(profileUpdate)
+    .eq('id', socialProfileId);
+  if (profileError) throw profileError;
+
+  const { error: creatorError } = await supabase
     .from('creators')
-    .update({
-      primary_language: data.language.primary !== 'unknown' ? data.language.primary : null,
-      country: data.location.country,
-      city: data.location.city,
-      contact_email: data.emails[0] || null,
-      ai_embedded: false, // mark as needing re-embed with new intelligence data
-    })
+    .update(creatorUpdate)
     .eq('id', creatorId);
+  if (creatorError) throw creatorError;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,26 +361,49 @@ export async function POST(request: Request) {
   } = body;
 
   // Build query to select profiles
-  let query = supabase
-    .from('social_profiles')
-    .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id')
-    .limit(batchSize);
+  let profiles: Array<Record<string, unknown>> | null;
+  let error: { message: string } | null;
 
-  if (mode === 'not_analyzed') {
-    query = query.is('intelligence_updated_at', null);
-  } else if (mode === 'enriched_first') {
-    query = query
-      .is('intelligence_updated_at', null)
-      .not('enrichment_data', 'is', null)
-      .order('id');
-  } else if (mode === 'missing_ai_summary') {
-    query = query.is('ai_summary', null);
-  } else if (mode === 'specific' && handles.length > 0) {
-    query = query.in('handle', handles);
+  if (mode === 'needs_reanalysis') {
+    // "Enriched more recently than last analyzed" is a column-to-column
+    // comparison, which PostgREST filters can't express directly — so pull
+    // candidates (both timestamps set) and filter/sort/limit in JS. NULL
+    // intelligence_updated_at is excluded — those belong to "Not yet analyzed".
+    const { data: candidates, error: candidatesError } = await supabase
+      .from('social_profiles')
+      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, enriched_at, intelligence_updated_at, intelligence_data')
+      .not('enriched_at', 'is', null)
+      .not('intelligence_updated_at', 'is', null);
+
+    profiles = (candidates || [])
+      .filter((p) => new Date(p.enriched_at as string).getTime() > new Date(p.intelligence_updated_at as string).getTime())
+      .sort((a, b) => new Date(b.enriched_at as string).getTime() - new Date(a.enriched_at as string).getTime())
+      .slice(0, batchSize);
+    error = candidatesError;
+  } else {
+    let query = supabase
+      .from('social_profiles')
+      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data')
+      .limit(batchSize);
+
+    if (mode === 'not_analyzed') {
+      query = query.is('intelligence_updated_at', null);
+    } else if (mode === 'enriched_first') {
+      query = query
+        .is('intelligence_updated_at', null)
+        .not('enrichment_data', 'is', null)
+        .order('id');
+    } else if (mode === 'missing_ai_summary') {
+      query = query.is('ai_summary', null);
+    } else if (mode === 'specific' && handles.length > 0) {
+      query = query.in('handle', handles);
+    }
+    // mode === 're_analyze_all' — no extra filters, just limit
+
+    const result = await query;
+    profiles = result.data;
+    error = result.error;
   }
-  // mode === 're_analyze_all' — no extra filters, just limit
-
-  const { data: profiles, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -412,13 +465,19 @@ export async function POST(request: Request) {
         }
       }
 
-      await saveIntelligence(profile.id, profile.creator_id as string, {
-        language,
-        location,
-        emails,
-        aiSummary,
-        website,
-      });
+      await saveIntelligence(
+        profile.id as string,
+        profile.creator_id as string,
+        (profile.intelligence_data as Record<string, unknown> | null) ?? null,
+        { doEmails, doLanguage, doLocation, doAI },
+        {
+          language,
+          location,
+          emails,
+          aiSummary,
+          website,
+        }
+      );
 
       results.push({
         handle: profile.handle as string,
