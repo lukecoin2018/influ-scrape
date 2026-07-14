@@ -4,6 +4,19 @@ import { useState, useEffect } from 'react';
 
 type Mode = 'not_embedded' | 'enriched_first' | 'needs_reembedding' | 're_embed' | 'has_ai_summary' | 'specific';
 
+// Chunk size for /api/embeddings/generate — each HTTP call must stay well
+// under Vercel's function duration limit and nginx's proxy timeout, so a
+// large run is split into many small requests instead of one huge one.
+//
+// not_embedded/enriched_first/needs_reembedding/has_ai_summary are
+// queue-based: embedded_at (or ai_embedded) is set on every processed
+// creator, so each chunk naturally sees the next still-pending batch with no
+// offset needed. re_embed has no natural queue-exit filter and is paginated
+// via an explicit offset; specific mode is paginated by slicing the handle
+// list client-side.
+const EMBED_CHUNK = 10;
+const EMBED_CHUNK_DELAY_MS = 2000;
+
 interface EmbedStatus {
   total: number;
   embedded: number;
@@ -27,6 +40,9 @@ export default function EmbeddingsPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState<EmbedResult[]>([]);
   const [progress, setProgress] = useState({ succeeded: 0, failed: 0, skipped: 0, total: 0 });
+  const [targetTotal, setTargetTotal] = useState(0);
+  const [attemptedCount, setAttemptedCount] = useState(0);
+  const [chunkErrors, setChunkErrors] = useState<string[]>([]);
   const [progressMessage, setProgressMessage] = useState('');
 
   useEffect(() => {
@@ -46,44 +62,109 @@ export default function EmbeddingsPage() {
   const startEmbedding = async () => {
     setIsRunning(true);
     setResults([]);
+    setChunkErrors([]);
     setProgressMessage('Generating embeddings...');
 
-    try {
-      const res = await fetch('/api/embeddings/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode,
-          batchSize,
-          handles: mode === 'specific'
-            ? handlesInput.split('\n').map(h => h.trim()).filter(Boolean)
-            : [],
-        }),
-      });
+    const isSpecific = mode === 'specific';
+    let pendingHandles = isSpecific
+      ? handlesInput.split('\n').map(h => h.trim()).filter(Boolean)
+      : [];
 
-      const data = await res.json();
+    // batchSize is the total the user wants processed this run; requests are
+    // split into EMBED_CHUNK-sized calls so no single HTTP request risks a
+    // platform timeout. For specific mode the target is capped to the handle
+    // count, matching the pre-existing (single-request) truncation behavior.
+    const totalTarget = isSpecific ? Math.min(pendingHandles.length, batchSize) : batchSize;
 
-      if (!res.ok) {
-        setProgressMessage(`Error: ${data.error}`);
-        return;
+    if (totalTarget === 0) {
+      setProgressMessage('No handles to process.');
+      setIsRunning(false);
+      return;
+    }
+
+    setTargetTotal(totalTarget);
+    setAttemptedCount(0);
+    setProgress({ succeeded: 0, failed: 0, skipped: 0, total: 0 });
+
+    // `attempted` drives progress/pagination (how many slots we've asked
+    // for); `processed` is the actual result count. These can differ for
+    // specific mode — creators.creator_id dedup (two handles from the same
+    // creator) or a not-found handle both yield fewer results than
+    // requested — so pagination must advance by what was requested, not by
+    // what came back, or a chunk with a few misses would look like "end of
+    // data" and stop the run before the remaining handles are processed.
+    let attempted = 0;
+    let processed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    let allResults: EmbedResult[] = [];
+    const errors: string[] = [];
+    let offset = 0;
+
+    const numChunks = Math.ceil(totalTarget / EMBED_CHUNK);
+
+    for (let i = 0; i < numChunks; i++) {
+      const remaining = totalTarget - attempted;
+      if (remaining <= 0) break;
+      const thisChunkSize = Math.min(EMBED_CHUNK, remaining);
+      const chunkHandles = isSpecific ? pendingHandles.slice(0, thisChunkSize) : [];
+
+      try {
+        const res = await fetch('/api/embeddings/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode,
+            batchSize: thisChunkSize,
+            offset,
+            handles: chunkHandles,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        const chunkResults: EmbedResult[] = data.results || [];
+        const chunkCount = chunkResults.length;
+
+        succeeded += data.succeeded || 0;
+        failed += data.failed || 0;
+        skipped += data.skipped || 0;
+        allResults = [...allResults, ...chunkResults];
+        processed += chunkCount;
+        attempted += thisChunkSize;
+        offset += thisChunkSize;
+
+        setResults(allResults);
+        setProgress({ succeeded, failed, skipped, total: processed });
+        setAttemptedCount(Math.min(attempted, totalTarget));
+
+        if (isSpecific) {
+          pendingHandles = pendingHandles.slice(thisChunkSize);
+        } else if (chunkCount === 0 || chunkCount < thisChunkSize) {
+          // Queue-based/offset modes only: fewer came back than requested
+          // means the queue is empty — stop instead of looping through more
+          // empty chunks. Specific mode is bounded by pendingHandles instead.
+          break;
+        }
+      } catch (err: any) {
+        const msg = `chunk ${i + 1}: ${err.message || 'Unknown error'}`;
+        errors.push(msg);
+        setChunkErrors([...errors]);
       }
 
-      setResults(data.results || []);
-      setProgress({
-        succeeded: data.succeeded,
-        failed: data.failed,
-        skipped: data.skipped,
-        total: data.results?.length || 0,
-      });
-      setProgressMessage(
-        `Complete! ${data.succeeded} embedded, ${data.failed} failed, ${data.skipped} skipped.`
-      );
-      fetchStatus();
-    } catch (err: any) {
-      setProgressMessage(`Error: ${err.message}`);
-    } finally {
-      setIsRunning(false);
+      if (i < numChunks - 1 && attempted < totalTarget) {
+        await new Promise(r => setTimeout(r, EMBED_CHUNK_DELAY_MS));
+      }
     }
+
+    setProgressMessage(`Complete! ${succeeded} embedded, ${failed} failed, ${skipped} skipped.`);
+    setIsRunning(false);
+    await fetchStatus();
   };
 
   return (
@@ -216,6 +297,9 @@ export default function EmbeddingsPage() {
               <p className="text-xs text-slate-500 mt-1">
                 Est. cost: ~${((batchSize * 300) / 1000000 * 0.02).toFixed(4)} (negligible)
               </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Processed in chunks of {EMBED_CHUNK}, {EMBED_CHUNK_DELAY_MS / 1000}s apart — a large batch runs as several short requests instead of one long one.
+              </p>
             </div>
           )}
 
@@ -239,6 +323,20 @@ export default function EmbeddingsPage() {
           <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
             <h2 className="text-lg font-bold text-slate-800 mb-3">Progress</h2>
             <p className="text-slate-700 mb-3">{progressMessage}</p>
+            {isRunning && targetTotal > 0 && (
+              <>
+                <div className="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>Processing {attemptedCount}/{targetTotal}…</span>
+                  <span>{Math.round((attemptedCount / targetTotal) * 100)}%</span>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-3">
+                  <div
+                    className="h-full bg-violet-500 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((attemptedCount / targetTotal) * 100)}%` }}
+                  />
+                </div>
+              </>
+            )}
             {progress.total > 0 && (
               <div className="flex gap-4 text-sm">
                 <span className="text-green-600 font-medium">✓ {progress.succeeded} embedded</span>
@@ -246,6 +344,13 @@ export default function EmbeddingsPage() {
                 {progress.skipped > 0 && <span className="text-slate-500">⚡ {progress.skipped} skipped</span>}
               </div>
             )}
+          </div>
+        )}
+
+        {chunkErrors.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-6 text-xs text-red-700 space-y-0.5">
+            <div className="font-semibold mb-1">Chunk errors (run continued):</div>
+            {chunkErrors.map((e, i) => <div key={i}>{e}</div>)}
           </div>
         )}
 

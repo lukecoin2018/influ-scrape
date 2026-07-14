@@ -353,6 +353,7 @@ export async function POST(request: Request) {
   const {
     mode = 'not_analyzed',
     batchSize = 50,
+    offset = 0,
     extractEmails: doEmails = true,
     detectLanguage: doLanguage = true,
     detectLocation: doLocation = true,
@@ -383,22 +384,31 @@ export async function POST(request: Request) {
   } else {
     let query = supabase
       .from('social_profiles')
-      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data')
-      .limit(batchSize);
+      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data');
 
     if (mode === 'not_analyzed') {
-      query = query.is('intelligence_updated_at', null);
+      // Queue-based: intelligence_updated_at is set on every processed row,
+      // so each call naturally sees the next still-pending batch — no offset.
+      query = query.is('intelligence_updated_at', null).limit(batchSize);
     } else if (mode === 'enriched_first') {
       query = query
         .is('intelligence_updated_at', null)
         .not('enrichment_data', 'is', null)
-        .order('id');
+        .order('id')
+        .limit(batchSize);
     } else if (mode === 'missing_ai_summary') {
-      query = query.is('ai_summary', null);
+      // Queue-based via ai_summary, but only converges if generateAISummary
+      // is enabled — otherwise ai_summary never gets set and the same rows
+      // are returned every chunk (bounded by the caller's chunk count, not
+      // an infinite loop, but a no-op run if AI summaries are disabled).
+      query = query.is('ai_summary', null).limit(batchSize);
     } else if (mode === 'specific' && handles.length > 0) {
-      query = query.in('handle', handles);
+      query = query.in('handle', handles).limit(batchSize);
+    } else {
+      // re_analyze_all — no natural queue-exit filter, so page through
+      // explicitly via offset with a stable order.
+      query = query.order('id').range(offset, offset + batchSize - 1);
     }
-    // mode === 're_analyze_all' — no extra filters, just limit
 
     const result = await query;
     profiles = result.data;
