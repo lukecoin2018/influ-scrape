@@ -169,3 +169,72 @@ export function mapProfileToCreator(profile: InstagramProfile): DiscoveredCreato
     latestPosts: (profile.latestPosts || []) as unknown[],
   };
 }
+
+/**
+ * Starts apify/instagram-post-scraper for one or more profiles.
+ *
+ * dataDetailLevel defaults to 'basicData'. The actor's own default is
+ * 'detailedData', which is a paid add-on adding alt text, latest comments,
+ * music info, paid-partnership and video play count. None of the
+ * collaboration fields we read (taggedUsers, coauthorProducers, mentions)
+ * are documented as detailed-only, so basic is the cheaper default — the
+ * process route reports field coverage so this can be verified on a real run.
+ */
+export async function startPostScraper(
+  usernames: string[],
+  resultsLimit: number = 12,
+  dataDetailLevel: 'basicData' | 'detailedData' = 'basicData'
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'apify~instagram-post-scraper';
+  const input = { username: usernames, resultsLimit, dataDetailLevel };
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start post scraper: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+
+  return {
+    runId: data.data.id,
+    datasetId: data.data.defaultDatasetId,
+  };
+}
+
+/**
+ * Polls a run to completion.
+ *
+ * Unlike the inline poller in app/api/enrich/process this one is bounded:
+ * an Apify run that hangs would otherwise keep a route handler alive until
+ * the platform kills it, with no diagnostic.
+ */
+export async function waitForRun(
+  runId: string,
+  options: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<{ status: string; datasetId?: string }> {
+  const timeoutMs = options.timeoutMs ?? 240_000;
+  const intervalMs = options.intervalMs ?? 3_000;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+
+    const { status, datasetId } = await getRunStatus(runId);
+
+    if (status === 'SUCCEEDED') return { status, datasetId };
+    if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
+      throw new Error(`Apify run ${runId} ${status}`);
+    }
+  }
+
+  throw new Error(`Apify run ${runId} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+}

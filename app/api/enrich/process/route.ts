@@ -28,12 +28,30 @@ function mapInstagramPost(post: any, socialProfileId: string) {
   const hashtagsFromCaption = extractHashtags(caption);
   const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
 
-  const taggedFromApify = (post.taggedUsers || [])
-    .map((u: any) => (typeof u === 'string' ? u : u.username || u.name || ''))
-    .filter(Boolean)
-    .map((u: string) => u.toLowerCase().replace(/^@/, ''));
+  const handlesFromActorList = (list: any): string[] =>
+    (Array.isArray(list) ? list : [])
+      .map((u: any) => (typeof u === 'string' ? u : u.username || u.name || ''))
+      .filter(Boolean)
+      .map((u: string) => u.toLowerCase().replace(/^@/, ''));
+
+  // coauthorProducers is Instagram's explicit "Collab" feature: the partner
+  // co-owns the post. It is the strongest partnership signal the actor returns
+  // and was previously dropped on the floor here.
+  //
+  // It folds into tagged_accounts rather than getting its own column, for two
+  // reasons: creator_posts has no spare column or JSONB to hold it (so a
+  // dedicated field would need a migration), and lib/brandAggregation.ts
+  // re-runs detectBrandsInPost() over stored posts using tagged_accounts
+  // alone — anything kept outside that array would be invisible to the
+  // re-detection path and the two would drift apart.
+  //
+  // Trade-off: coauthor and plain tag are indistinguishable once stored.
+  const taggedFromApify = handlesFromActorList(post.taggedUsers);
+  const coauthorsFromApify = handlesFromActorList(post.coauthorProducers);
   const mentionsFromCaption = extractMentions(caption);
-  const taggedAccounts = [...new Set([...taggedFromApify, ...mentionsFromCaption])];
+  const taggedAccounts = [
+    ...new Set([...taggedFromApify, ...coauthorsFromApify, ...mentionsFromCaption]),
+  ];
 
   const ownerUsername = post.ownerUsername || post.owner?.username || '';
   const detection = detectBrandsInPost({
