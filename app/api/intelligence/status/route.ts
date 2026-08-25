@@ -11,30 +11,35 @@ export async function GET() {
     // Total social profiles
     const { count: total } = await supabase
       .from('social_profiles')
-      .select('*', { count: 'exact', head: true });
+      .select('*', { count: 'exact', head: true })
+      .eq('import_status', 'active');
 
     // Analyzed (has intelligence_updated_at set)
     const { count: analyzed } = await supabase
       .from('social_profiles')
       .select('*', { count: 'exact', head: true })
+      .eq('import_status', 'active')
       .not('intelligence_updated_at', 'is', null);
 
     // With email detected
     const { count: withEmail } = await supabase
       .from('social_profiles')
       .select('*', { count: 'exact', head: true })
+      .eq('import_status', 'active')
       .not('detected_email', 'is', null);
 
     // With location detected
     const { count: withLocation } = await supabase
       .from('social_profiles')
       .select('*', { count: 'exact', head: true })
+      .eq('import_status', 'active')
       .not('detected_country', 'is', null);
 
     // With AI summary
     const { count: withAiSummary } = await supabase
       .from('social_profiles')
       .select('*', { count: 'exact', head: true })
+      .eq('import_status', 'active')
       .not('ai_summary', 'is', null);
 
     // Needs re-analysis: enriched more recently than the last intelligence run.
@@ -44,6 +49,7 @@ export async function GET() {
     const { data: reanalysisCandidates } = await supabase
       .from('social_profiles')
       .select('enriched_at, intelligence_updated_at')
+      .eq('import_status', 'active')
       .not('enriched_at', 'is', null)
       .not('intelligence_updated_at', 'is', null);
 

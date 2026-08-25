@@ -172,6 +172,7 @@ export async function POST(request: NextRequest) {
       const { data: creators } = await supabase
         .from('creators')
         .select('id, display_name')
+        .eq('import_status', 'active')
         .eq('ai_embedded', false)
         .order('total_followers', { ascending: false })
         .limit(batchSize);
@@ -204,6 +205,7 @@ export async function POST(request: NextRequest) {
       const { data: creators } = await supabase
         .from('creators')
         .select('id, display_name')
+        .eq('import_status', 'active')
         .is('embedded_at', null)
         .limit(batchSize * 2);
 
@@ -236,6 +238,7 @@ export async function POST(request: NextRequest) {
       const { data: creators } = await supabase
         .from('creators')
         .select('id, display_name')
+        .eq('import_status', 'active')
         .order('total_followers', { ascending: false })
         .limit(batchSize);
 
@@ -247,6 +250,7 @@ export async function POST(request: NextRequest) {
       const { data: creators } = await supabase
         .from('creators')
         .select('id, display_name')
+        .eq('import_status', 'active')
         .is('embedded_at', null)
         .order('total_followers', { ascending: false })
         .limit(batchSize);

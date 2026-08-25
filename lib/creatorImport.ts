@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import type { ImportStatus } from './followerRange';
 
 /**
  * Shared creator-import path.
@@ -33,6 +34,11 @@ export interface ImportableCreator {
   website?: string;
   discoveredViaHashtags?: string[];
   platformData?: Record<string, unknown>;
+  /**
+   * Defaults to 'active' when omitted, so existing callers (hashtag
+   * discovery, manual add, dataset import) are unaffected.
+   */
+  importStatus?: ImportStatus;
 }
 
 export interface ImportResult {
@@ -41,6 +47,43 @@ export interface ImportResult {
   total: number;
   savedHandles: string[];
   errors: string[];
+}
+
+/**
+ * Recomputes creators.import_status from the profiles beneath it.
+ *
+ * A creator is only out of range when EVERY profile is — someone in range on
+ * TikTok but not Instagram stays eligible. Called after any write that could
+ * change a profile's status, including back to 'active' when a new in-range
+ * profile is added to a previously-excluded creator.
+ */
+export async function rollUpCreatorImportStatus(creatorId: string): Promise<ImportStatus> {
+  const { data: profiles, error } = await supabase
+    .from('social_profiles')
+    .select('import_status')
+    .eq('creator_id', creatorId);
+
+  if (error) {
+    console.error(`Failed to read profiles for roll-up of ${creatorId}:`, error.message);
+    return 'active';
+  }
+
+  const rows = profiles || [];
+  const rolledUp: ImportStatus =
+    rows.length > 0 && rows.every(p => p.import_status === 'out_of_range')
+      ? 'out_of_range'
+      : 'active';
+
+  const { error: updateError } = await supabase
+    .from('creators')
+    .update({ import_status: rolledUp })
+    .eq('id', creatorId);
+
+  if (updateError) {
+    console.error(`Failed to roll up import_status for ${creatorId}:`, updateError.message);
+  }
+
+  return rolledUp;
 }
 
 export async function saveDiscoveredCreators(
@@ -129,8 +172,28 @@ export async function saveDiscoveredCreators(
         continue;
       }
 
-      // 5. Update total followers
+      // 5. Apply import_status.
+      //
+      // upsert_social_profile's signature is fixed and shared with hashtag
+      // discovery and manual add, so the status is written as a follow-up
+      // UPDATE rather than by changing that function. Only written when the
+      // caller asked for a non-default value, so the other import paths never
+      // touch the column.
+      if (creator.importStatus && creator.importStatus !== 'active') {
+        const { error: statusError } = await supabase
+          .from('social_profiles')
+          .update({ import_status: creator.importStatus })
+          .eq('platform', platform)
+          .eq('handle', handle);
+
+        if (statusError) {
+          console.error(`Failed to set import_status for ${handle}:`, statusError.message);
+        }
+      }
+
+      // 6. Update total followers and roll the status up to the creator.
       await supabase.rpc('update_creator_total_followers', { p_creator_id: creatorId });
+      await rollUpCreatorImportStatus(creatorId);
 
       saved++;
       savedHandles.push(handle);

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useChunkedRunner } from '@/lib/useChunkedRunner';
+import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
 
 // Chunks of 10, 2s apart — the cadence the other batch runners in this app use.
 const CHUNK_SIZE = 10;
@@ -45,14 +46,19 @@ interface BrandResult {
   postsScraped: number;
   candidatesFound: number;
   candidatesExcluded: number;
+  entityExcluded: number;
   knownCreators: number;
   newHandles: number;
   newHandlesSkipped: number;
+  importedInRange: number;
+  importedOutOfRange: number;
+  outOfRangeSamples: { handle: string; followerCount: number }[];
   creatorsImported: number;
   creatorsFailed: number;
   edgesBuilt: number;
   edgesWritten: number;
   edgesDuplicate: number;
+  edgesFromEntityExcluded: number;
   fieldCoverage: FieldCoverage;
   durationMs: number;
 }
@@ -75,6 +81,8 @@ export default function BrandFeedPage() {
   const [batchSize, setBatchSize] = useState(25);
   const [postsPerBrand, setPostsPerBrand] = useState(12);
   const [detailed, setDetailed] = useState(false);
+  const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
+  const [maxFollowers, setMaxFollowers] = useState(DEFAULT_MAX_FOLLOWERS);
   const [handlesInput, setHandlesInput] = useState('');
   const [status, setStatus] = useState<StatusData | null>(null);
   const [queueInfo, setQueueInfo] = useState<string>('');
@@ -105,6 +113,8 @@ export default function BrandFeedPage() {
           brandId: item.brandId,
           postsPerBrand,
           dataDetailLevel: detailed ? 'detailedData' : 'basicData',
+          minFollowers,
+          maxFollowers,
         }),
       });
 
@@ -112,7 +122,7 @@ export default function BrandFeedPage() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return data as BrandResult;
     },
-    [postsPerBrand, detailed]
+    [postsPerBrand, detailed, minFollowers, maxFollowers]
   );
 
   const labelFor = useCallback((item: QueueItem) => `@${item.handle}`, []);
@@ -168,15 +178,24 @@ export default function BrandFeedPage() {
   const totals = results.reduce(
     (acc, r) => ({
       posts: acc.posts + r.postsScraped,
+      candidates: acc.candidates + r.candidatesFound,
       newHandles: acc.newHandles + r.newHandles,
-      imported: acc.imported + r.creatorsImported,
+      inRange: acc.inRange + r.importedInRange,
+      outOfRange: acc.outOfRange + r.importedOutOfRange,
+      entityExcluded: acc.entityExcluded + r.entityExcluded,
       edges: acc.edges + r.edgesWritten,
+      edgesFromExcluded: acc.edgesFromExcluded + r.edgesFromEntityExcluded,
       known: acc.known + r.knownCreators,
-      excluded: acc.excluded + r.candidatesExcluded,
       stubs: acc.stubs + (r.brandCreated ? 1 : 0),
     }),
-    { posts: 0, newHandles: 0, imported: 0, edges: 0, known: 0, excluded: 0, stubs: 0 }
+    { posts: 0, candidates: 0, newHandles: 0, inRange: 0, outOfRange: 0,
+      entityExcluded: 0, edges: 0, edgesFromExcluded: 0, known: 0, stubs: 0 }
   );
+
+  const outOfRangeSamples = results
+    .flatMap(r => r.outOfRangeSamples || [])
+    .sort((a, b) => b.followerCount - a.followerCount)
+    .slice(0, 12);
 
   const coverage = results.reduce(
     (acc, r) => ({
@@ -358,6 +377,42 @@ export default function BrandFeedPage() {
             </div>
           </div>
 
+          <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+            <label className="block text-sm font-medium text-slate-700 mb-1">Follower range</label>
+            <p className="text-xs text-slate-500 mb-3">
+              Applied after the profile scrape. Creators outside this range are still imported and
+              still get their partnership edges &mdash; they are just marked so enrichment,
+              intelligence and embeddings skip them. A follower count of 0 means a failed or private
+              scrape and is treated as unknown, not out of range.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Min followers</label>
+                <input
+                  type="number"
+                  value={minFollowers}
+                  onChange={e => setMinFollowers(parseInt(e.target.value) || 0)}
+                  min={0}
+                  step={1000}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
+                  disabled={runner.isRunning}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Max followers</label>
+                <input
+                  type="number"
+                  value={maxFollowers}
+                  onChange={e => setMaxFollowers(parseInt(e.target.value) || 0)}
+                  min={1}
+                  step={1000}
+                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
+                  disabled={runner.isRunning}
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="mb-5">
             <label className="block text-sm font-medium text-slate-700 mb-2">
               Specific brand handles (optional — overrides scope &amp; ordering)
@@ -436,27 +491,62 @@ export default function BrandFeedPage() {
             <p className="text-xs text-slate-500 mb-4">
               Averages across {results.length} brand{results.length === 1 ? '' : 's'} scraped this run.
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
               <div className="text-center">
-                <div className="text-3xl font-bold text-violet-600">{per(totals.newHandles)}</div>
-                <div className="text-xs text-slate-500">New handles / brand</div>
-                <div className="text-xs text-slate-400">{totals.newHandles} total</div>
+                <div className="text-3xl font-bold text-green-600">{per(totals.inRange)}</div>
+                <div className="text-xs text-slate-500">In range, imported</div>
+                <div className="text-xs text-slate-400">{totals.inRange} queued for enrichment</div>
               </div>
               <div className="text-center">
-                <div className="text-3xl font-bold text-green-600">{per(totals.edges)}</div>
+                <div className="text-3xl font-bold text-amber-500">{per(totals.outOfRange)}</div>
+                <div className="text-xs text-slate-500">Out of range, recorded only</div>
+                <div className="text-xs text-slate-400">{totals.outOfRange} excluded from pipelines</div>
+              </div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-slate-400">{per(totals.entityExcluded)}</div>
+                <div className="text-xs text-slate-500">Entity-excluded</div>
+                <div className="text-xs text-slate-400">{totals.entityExcluded} never scraped</div>
+              </div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-violet-600">{per(totals.edges)}</div>
                 <div className="text-xs text-slate-500">Edges / brand</div>
-                <div className="text-xs text-slate-400">{totals.edges} total</div>
+                <div className="text-xs text-slate-400">
+                  {totals.edges} total{totals.edgesFromExcluded > 0 ? `, ${totals.edgesFromExcluded} from excluded` : ''}
+                </div>
               </div>
               <div className="text-center">
                 <div className="text-3xl font-bold text-slate-800">{per(totals.known)}</div>
                 <div className="text-xs text-slate-500">Known creators / brand</div>
-                <div className="text-xs text-slate-400">{totals.known} total</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl font-bold text-amber-500">{totals.imported}</div>
-                <div className="text-xs text-slate-500">Creators imported</div>
                 <div className="text-xs text-slate-400">{totals.stubs} brand stubs created</div>
               </div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-slate-100 text-xs text-slate-500">
+              Of {totals.candidates} candidates across {results.length} brand{results.length === 1 ? '' : 's'}:{' '}
+              <strong className="text-slate-700">{totals.entityExcluded}</strong> dropped by the entity filter before any
+              scrape, <strong className="text-slate-700">{totals.known}</strong> already known,{' '}
+              <strong className="text-green-700">{totals.inRange}</strong> newly imported inside{' '}
+              {minFollowers.toLocaleString()}–{maxFollowers.toLocaleString()}, and{' '}
+              <strong className="text-amber-600">{totals.outOfRange}</strong> newly imported outside it
+              (edges kept, pipelines skipped).
+            </div>
+          </div>
+        )}
+
+        {/* What got skipped on size — visible, not silent */}
+        {outOfRangeSamples.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Largest out-of-range imports</h2>
+            <p className="text-xs text-slate-500 mb-4">
+              Imported and credited with their partnership edges, but marked so enrichment,
+              intelligence and embeddings skip them.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {outOfRangeSamples.map((c, i) => (
+                <span key={i} className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-2 py-1 rounded">
+                  @{c.handle} · {c.followerCount.toLocaleString()}
+                </span>
+              ))}
             </div>
           </div>
         )}
@@ -523,9 +613,10 @@ export default function BrandFeedPage() {
                     <th className="text-left py-2 px-3 font-semibold text-slate-700">Brand</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Posts</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Candidates</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="Dropped by brand_aliases / brands classification, before any profile scrape">Entity&nbsp;excl.</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Known</th>
-                    <th className="text-right py-2 px-3 font-semibold text-slate-700">New</th>
-                    <th className="text-right py-2 px-3 font-semibold text-slate-700">Imported</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles inside the follower range — imported and queued for enrichment">In&nbsp;range</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles outside the follower range — imported with edges, excluded from pipelines">Out&nbsp;of&nbsp;range</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Edges</th>
                   </tr>
                 </thead>
@@ -548,19 +639,21 @@ export default function BrandFeedPage() {
                         )}
                       </td>
                       <td className="py-2 px-3 text-right text-slate-600">{r.postsScraped}</td>
-                      <td className="py-2 px-3 text-right text-slate-600">
-                        {r.candidatesFound}
-                        {r.candidatesExcluded > 0 && (
-                          <span className="text-slate-400"> (−{r.candidatesExcluded})</span>
-                        )}
+                      <td className="py-2 px-3 text-right text-slate-600">{r.candidatesFound}</td>
+                      <td className="py-2 px-3 text-right text-slate-500">
+                        {r.entityExcluded > 0 ? `−${r.entityExcluded}` : '—'}
                       </td>
                       <td className="py-2 px-3 text-right text-slate-600">{r.knownCreators}</td>
-                      <td className="py-2 px-3 text-right text-violet-600 font-medium">{r.newHandles}</td>
-                      <td className="py-2 px-3 text-right text-slate-600">{r.creatorsImported}</td>
+                      <td className="py-2 px-3 text-right text-green-600 font-medium">{r.importedInRange}</td>
+                      <td className="py-2 px-3 text-right text-amber-600 font-medium">
+                        {r.importedOutOfRange > 0 ? `−${r.importedOutOfRange}` : '—'}
+                      </td>
                       <td className="py-2 px-3 text-right text-green-600 font-medium">
                         {r.edgesWritten}
-                        {r.edgesDuplicate > 0 && (
-                          <span className="text-slate-400"> (+{r.edgesDuplicate} dup)</span>
+                        {r.edgesFromEntityExcluded > 0 && (
+                          <span className="text-slate-400" title="Edges from entity-excluded candidates already in the database">
+                            {' '}({r.edgesFromEntityExcluded} excl.)
+                          </span>
                         )}
                       </td>
                     </tr>

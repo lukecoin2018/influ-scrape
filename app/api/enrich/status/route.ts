@@ -8,7 +8,8 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase
       .from('social_profiles')
-      .select('platform, enriched_at');
+      .select('platform, enriched_at')
+      .eq('import_status', 'active');
 
     if (error) throw error;
 
