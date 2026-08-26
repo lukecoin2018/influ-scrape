@@ -60,7 +60,7 @@ const fmt = n => (n ?? 0).toLocaleString();
 
 // 1. Cohort
 const cohort = await get(
-  'social_profiles?select=id,handle,follower_count,creator_id,import_status,enriched_at,intelligence_updated_at' +
+  'social_profiles?select=id,handle,follower_count,creator_id,import_status,import_status_at,enriched_at,intelligence_updated_at' +
   '&platform=eq.instagram&discovered_via_hashtags=cs.%7Bbrand_feed%7D&order=follower_count.desc'
 );
 console.log(`Cohort: ${cohort.length} profiles imported by the brand-feed pipeline\n`);
@@ -131,6 +131,13 @@ console.log(`  TOTAL to write         ${toStamp.length}`
   + (alreadyCorrect.length ? `   (${alreadyCorrect.length} already correct, skipped)` : ''));
 console.log(`  staying active         ${keep.length}`
   + `  (${keep.filter(r => r.unknownSize).length} zero/unknown followers, left eligible)`);
+const stampedRows = rows.filter(r => r.import_status !== 'active');
+const withStamp = stampedRows.filter(r => r.import_status_at);
+console.log(`  stamp metadata present ${withStamp.length} of ${stampedRows.length} stamped rows`);
+if (withStamp.length) {
+  const ages = withStamp.map(r => (Date.now() - new Date(r.import_status_at).getTime()) / 86400000);
+  console.log(`    oldest stamp           ${Math.max(...ages).toFixed(1)} days`);
+}
 console.log(`  already enriched       ${rows.filter(r => r.enriched_at).length}`);
 console.log(`  already analysed       ${rows.filter(r => r.intelligence_updated_at).length}`);
 console.log('═'.repeat(92));
@@ -145,9 +152,15 @@ for (const target of ['out_of_range_high', 'out_of_range_low', 'active']) {
   const ids = toStamp.filter(r => r.desired === target).map(r => r.id);
   for (const batch of chunk(ids, 50)) {
     const inList = batch.map(id => `"${id}"`).join(',');
+    const stamped = target !== 'active';
     const r = await fetch(`${U}/rest/v1/social_profiles?id=in.(${inList})`, {
       method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-      body: JSON.stringify({ import_status: target }),
+      // Stamp provenance travels with the status. The follower count snapshot
+      // is per-row, so it goes through a returning PATCH per row below rather
+      // than this batch write, which can only set one literal value.
+      body: JSON.stringify(stamped
+        ? { import_status: target, import_status_at: new Date().toISOString() }
+        : { import_status: target, import_status_at: null, import_status_follower_count: null }),
     });
     if (!r.ok) throw new Error(`profile update failed: ${await r.text()}`);
     const n = (await r.json()).length;
@@ -156,6 +169,19 @@ for (const target of ['out_of_range_high', 'out_of_range_low', 'active']) {
   }
 }
 console.log(`  social_profiles written: ${stamped}`);
+
+// Snapshot each stamped row's follower count. Separate pass because a batch
+// PATCH can only write one literal, and this value differs per row.
+let snapshots = 0;
+for (const r of toStamp.filter(r => r.desired !== 'active')) {
+  const res = await fetch(`${U}/rest/v1/social_profiles?id=eq.${r.id}`, {
+    method: 'PATCH', headers: { ...H, Prefer: 'return=minimal' },
+    body: JSON.stringify({ import_status_follower_count: r.follower_count ?? null }),
+  });
+  if (!res.ok) throw new Error(`snapshot failed for ${r.handle}: ${await res.text()}`);
+  snapshots++;
+}
+console.log(`  follower snapshots:      ${snapshots}`);
 
 // 5. Roll up — a creator is out only when ALL their profiles are out
 const creatorIds = [...new Set(toStamp.map(r => r.creator_id))].filter(Boolean);

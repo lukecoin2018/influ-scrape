@@ -170,17 +170,30 @@ export async function saveDiscoveredCreators(
         continue;
       }
 
-      // 5. Apply import_status.
+      // 5. Apply import_status and its stamp provenance.
       //
       // upsert_social_profile's signature is fixed and shared with hashtag
-      // discovery and manual add, so the status is written as a follow-up
-      // UPDATE rather than by changing that function. Only written when the
-      // caller asked for a non-default value, so the other import paths never
-      // touch the column.
-      if (creator.importStatus && creator.importStatus !== 'active') {
+      // discovery and manual add, so these are written as a follow-up UPDATE
+      // rather than by changing that function.
+      //
+      // The guard is `!== undefined`, not `!== 'active'`: callers that never
+      // pass importStatus (hashtag discovery, manual add, dataset import) are
+      // still untouched, but a caller that explicitly says 'active' can now
+      // promote a previously-stamped profile back. Without that, a profile
+      // stamped out_of_range_low could never return to the pipelines by
+      // being re-discovered in range.
+      if (creator.importStatus !== undefined) {
+        const stamped = creator.importStatus !== 'active';
+
         const { error: statusError } = await supabase
           .from('social_profiles')
-          .update({ import_status: creator.importStatus })
+          .update({
+            import_status: creator.importStatus,
+            // Snapshot what the decision was based on. Cleared on promotion so
+            // a stale snapshot can never outlive the stamp it belonged to.
+            import_status_at: stamped ? new Date().toISOString() : null,
+            import_status_follower_count: stamped ? (creator.followerCount ?? null) : null,
+          })
           .eq('platform', platform)
           .eq('handle', handle);
 
