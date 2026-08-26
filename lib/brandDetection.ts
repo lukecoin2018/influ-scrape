@@ -1,4 +1,5 @@
 import type { Partnership } from './types';
+import { findMentionsInCaption, normaliseHandleToken } from './handles';
 
 // ── TikTok LIVE exclusions ─────────────────────────────────────────────────────
 // These hashtags indicate TikTok's own creator incentive programs — the creator
@@ -180,10 +181,13 @@ function isMarketingIndustryPost(hashtagsLower: string[]): boolean {
  */
 function extractXPatternMentions(caption: string): string[] {
   const results: string[] = [];
-  const xPattern = /(?:^|\s)[xX×]\s*@([a-zA-Z0-9._]+)/g;
+  // Same trailing boundary as every other mention match: without it
+  // "x @Rare Beauty" yields the fragment "rare".
+  const xPattern = /(?:^|\s)[xX×]\s*@([a-zA-Z0-9._]+)(?![A-Za-z0-9\u00C0-\u024F'\u2019-])/g;
   let match;
   while ((match = xPattern.exec(caption)) !== null) {
-    results.push(match[1].toLowerCase());
+    const handle = normaliseHandleToken(match[1]);
+    if (handle) results.push(handle);
   }
   return results;
 }
@@ -223,12 +227,9 @@ function extractMentionCollabPatterns(caption: string): string[] {
     'koostöö', 'koostoo', 'reklaam',
   ];
   const results: string[] = [];
-  const mentionPattern = /@([a-zA-Z0-9._]+)/g;
-  let match;
-  while ((match = mentionPattern.exec(caption)) !== null) {
-    const handle = match[1].toLowerCase();
-    const afterHandle = caption.slice(match.index + match[0].length, match.index + match[0].length + 40).toLowerCase();
-    const beforeHandle = caption.slice(Math.max(0, match.index - 20), match.index).toLowerCase();
+  for (const { handle, index, matchLength } of findMentionsInCaption(caption)) {
+    const afterHandle = caption.slice(index + matchLength, index + matchLength + 40).toLowerCase();
+    const beforeHandle = caption.slice(Math.max(0, index - 20), index).toLowerCase();
     const context = beforeHandle + ' ' + afterHandle;
     if (collabWords.some(word => context.includes(word))) {
       results.push(handle);
@@ -344,10 +345,11 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
 
   // ── Step 7: @mentions in caption (only for sponsored posts) ──────────────────
   if (isSponsoredContent) {
-    const mentionRegex = /@([a-zA-Z0-9._]+)/g;
-    let match;
-    while ((match = mentionRegex.exec(caption)) !== null) {
-      const handle = match[1].toLowerCase();
+    // Shared extractor: same character class AND trailing boundary as every
+    // other mention path. The previous inline regex had no boundary check, so
+    // "@Huda Beauty" in a caption was filed as the brand "huda" — the same
+    // display-name truncation that corrupted the TikTok pipeline.
+    for (const handle of findMentionsInCaption(caption).map(m => m.handle)) {
       if (handle !== ownerHandle && isLikelyBrand(handle)) {
         brandHandles.add(handle);
         detectionSignals.add('mentioned_in_caption');

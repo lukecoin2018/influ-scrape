@@ -108,11 +108,37 @@ export function handlesFromActorList(list: unknown): string[] {
  * caption; captions there carry display names, not usernames.
  */
 export function extractMentionsFromCaption(caption: string): string[] {
-  const pattern = /@[a-zA-Z0-9._]+(?![A-Za-z0-9\u00C0-\u024F'\u2019-])/g;
-  const matches = (caption || '').match(pattern) || [];
-  return [...new Set(
-    matches.map(normaliseHandleToken).filter((h): h is string => h !== null)
-  )];
+  return [...new Set(findMentionsInCaption(caption).map(m => m.handle))];
+}
+
+export interface CaptionMention {
+  handle: string;
+  /** Offset of the '@' in the caption, for callers that inspect context. */
+  index: number;
+  /** Length of the matched text including the '@'. */
+  matchLength: number;
+}
+
+/**
+ * The single mention pattern. Positional, so callers that need the surrounding
+ * text (collab-word proximity, "x @brand") share the same boundary rule rather
+ * than each carrying their own copy of it.
+ */
+const MENTION_PATTERN = /@[a-zA-Z0-9._]+(?![A-Za-z0-9\u00C0-\u024F'\u2019-])/g;
+
+export function findMentionsInCaption(caption: string): CaptionMention[] {
+  const out: CaptionMention[] = [];
+  if (!caption) return out;
+
+  const pattern = new RegExp(MENTION_PATTERN.source, 'g');
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(caption)) !== null) {
+    const handle = normaliseHandleToken(match[0]);
+    if (handle) out.push({ handle, index: match.index, matchLength: match[0].length });
+  }
+
+  return out;
 }
 
 export interface ParsedHandles {
