@@ -10,13 +10,15 @@ const CHUNK_SIZE = 10;
 const CHUNK_DELAY_MS = 2000;
 
 type Scope = 'verified_brands' | 'classified_brands' | 'all_brands';
-type Order = 'never_scraped' | 'stale_first' | 'top_creators';
+type Order = 'never_scraped' | 'stale_first' | 'top_creators' | 'casting_fit';
 
 interface QueueItem {
   handle: string;
   brandId: string | null;
   feedScrapedAt: string | null;
   feedPostCount: number | null;
+  castingInRange: number | null;
+  castingSampleSize: number | null;
   creatorsCount: number | null;
 }
 
@@ -77,6 +79,7 @@ const ORDER_OPTIONS: { value: Order; label: string; desc: string }[] = [
   { value: 'never_scraped', label: 'Never scraped first', desc: 'Only brands with no feed_scraped_at, most-referenced first' },
   { value: 'stale_first', label: 'Stale first', desc: 'Oldest feed_scraped_at first; never-scraped counts as most stale' },
   { value: 'top_creators', label: 'Most creators first', desc: 'Highest brand_aliases.creators_count first, regardless of scrape state' },
+  { value: 'casting_fit', label: 'Best casting fit first', desc: 'Most partnered creators inside your follower band; thin samples sort last' },
 ];
 
 export default function BrandFeedPage() {
@@ -94,6 +97,7 @@ export default function BrandFeedPage() {
   const [invalidHandles, setInvalidHandles] = useState<{ input: string; reason: string }[]>([]);
   const [skipLowYield, setSkipLowYield] = useState(false);
   const [minLastPostCount, setMinLastPostCount] = useState(2);
+  const [castingSampleFloor, setCastingSampleFloor] = useState(5);
   // Covers the gap between the click and runner.isRunning going true. The
   // queue build is a ~1s round trip, and until it resolves the runner has not
   // started, so a button disabled only on isRunning stays live and a second
@@ -177,6 +181,7 @@ export default function BrandFeedPage() {
         body: JSON.stringify({
           scope, order, batchSize, handles,
           minLastPostCount: skipLowYield ? minLastPostCount : undefined,
+          castingSampleFloor,
         }),
       });
 
@@ -422,6 +427,28 @@ export default function BrandFeedPage() {
               </label>
             </div>
           </div>
+
+          {order === 'casting_fit' && (
+            <div className="mb-5 p-4 bg-violet-50 border border-violet-200 rounded-lg">
+              <label className="block text-sm font-medium text-violet-900 mb-1">
+                Minimum casting sample
+                <input
+                  type="number"
+                  value={castingSampleFloor}
+                  onChange={e => setCastingSampleFloor(Math.max(1, parseInt(e.target.value) || 1))}
+                  min={1}
+                  max={100}
+                  className="ml-2 w-20 px-2 py-0.5 border border-violet-300 rounded text-sm"
+                  disabled={busy}
+                />
+              </label>
+              <p className="text-xs text-violet-800">
+                Brands with fewer than this many partnered creators sort last rather than being
+                ranked. A brand that is 100% in-band across 4 creators is noise; one with 9 in-band
+                out of 17 is signal. Nothing is excluded &mdash; a thin sample only delays a brand.
+              </p>
+            </div>
+          )}
 
           <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-lg">
             <label className="flex items-start gap-2 cursor-pointer">

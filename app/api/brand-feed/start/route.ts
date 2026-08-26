@@ -9,7 +9,7 @@ import {
 } from '@/lib/brandFeedQueue';
 
 const SCOPES: BrandFeedScope[] = ['verified_brands', 'classified_brands', 'all_brands'];
-const ORDERS: BrandFeedOrder[] = ['never_scraped', 'stale_first', 'top_creators'];
+const ORDERS: BrandFeedOrder[] = ['never_scraped', 'stale_first', 'top_creators', 'casting_fit'];
 
 /**
  * Builds the brand-feed work queue. Read-only — no rows are created here,
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
 
       const { data: brands } = await supabase
         .from('brands')
-        .select('id, instagram_handle, feed_scraped_at, feed_post_count, total_partnerships_detected')
+        .select('id, instagram_handle, feed_scraped_at, feed_post_count, casting_in_range_count, casting_sample_size, total_partnerships_detected')
         .in('instagram_handle', handles);
 
       const byHandle = new Map(
@@ -59,6 +59,8 @@ export async function POST(request: NextRequest) {
           brandId: brand?.id ?? null,
           feedScrapedAt: brand?.feed_scraped_at ?? null,
           feedPostCount: brand?.feed_post_count ?? null,
+          castingInRange: brand?.casting_in_range_count ?? null,
+          castingSampleSize: brand?.casting_sample_size ?? null,
           creatorsCount: null,
           aliasVerified: false,
           isClassifiedBrand: false,
@@ -81,7 +83,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const queue = await buildBrandFeedQueue(scope, order, batchSize, minLastPostCount);
+    const castingSampleFloor = Number(body.castingSampleFloor) > 0
+      ? Number(body.castingSampleFloor)
+      : undefined;
+
+    const queue = await buildBrandFeedQueue(
+      scope, order, batchSize, minLastPostCount, castingSampleFloor
+    );
 
     return NextResponse.json({
       scope,

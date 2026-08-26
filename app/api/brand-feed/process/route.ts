@@ -20,6 +20,7 @@ import {
   type FollowerRange,
 } from '@/lib/followerRange';
 import { isValidInstagramHandle } from '@/lib/handles';
+import { recomputeCastingProfile } from '@/lib/castingProfile';
 import type { InstagramProfile } from '@/lib/types';
 
 /**
@@ -181,21 +182,39 @@ async function loadEntityExcludedHandles(handles: string[]): Promise<Set<string>
   return excluded;
 }
 
-/** handle -> creators.id, for handles that already have an Instagram profile. */
-async function resolveCreatorIds(handles: string[]): Promise<Map<string, string>> {
-  const resolved = new Map<string, string>();
+interface ResolvedCreator {
+  creatorId: string;
+  /** Snapshotted onto the edge so the casting profile cannot drift. */
+  followerCount: number | null;
+}
+
+/**
+ * handle -> creator id and current follower count, for handles that already
+ * have an Instagram profile.
+ *
+ * The follower count is read here rather than separately because it has to be
+ * captured at edge-write time: partnerships.creator_follower_count records
+ * what the creator was when the brand cast them, not what they are now.
+ */
+async function resolveCreators(handles: string[]): Promise<Map<string, ResolvedCreator>> {
+  const resolved = new Map<string, ResolvedCreator>();
   if (handles.length === 0) return resolved;
 
   for (const batch of chunk(handles, LOOKUP_CHUNK)) {
     const { data, error } = await supabase
       .from('social_profiles')
-      .select('handle, creator_id')
+      .select('handle, creator_id, follower_count')
       .eq('platform', 'instagram')
       .in('handle', batch);
 
     if (error) throw new Error(`social_profiles lookup failed: ${error.message}`);
     for (const row of data || []) {
-      if (row.creator_id) resolved.set(norm(row.handle), row.creator_id as string);
+      if (row.creator_id) {
+        resolved.set(norm(row.handle), {
+          creatorId: row.creator_id as string,
+          followerCount: (row.follower_count as number | null) ?? null,
+        });
+      }
     }
   }
 
@@ -315,7 +334,7 @@ async function importNewCreators(
 function buildEdges(
   posts: BrandPostCollabs[],
   brandId: string,
-  creatorIds: Map<string, string>
+  creators: Map<string, ResolvedCreator>
 ) {
   const seen = new Set<string>();
   const edges: Record<string, unknown>[] = [];
@@ -326,8 +345,9 @@ function buildEdges(
     if (!post.postUrl) continue;
 
     for (const candidate of post.candidates) {
-      const creatorId = creatorIds.get(candidate.handle);
-      if (!creatorId) continue;
+      const creator = creators.get(candidate.handle);
+      if (!creator) continue;
+      const creatorId = creator.creatorId;
 
       const key = `${creatorId}|${brandId}|${post.postUrl}`;
       if (seen.has(key)) continue;
@@ -345,6 +365,9 @@ function buildEdges(
         views_count: post.viewsCount,
         detection_signals: candidate.signals,
         detection_confidence: candidate.confidence,
+        // Captured now, not read back later: this is what the brand cast.
+        creator_follower_count: creator.followerCount,
+        follower_count_source: 'snapshot',
         // Not hashtag-discovered; the provenance lives in discovery_source.
         discovered_via_hashtag: null,
         discovery_source: 'brand_feed',
@@ -413,10 +436,10 @@ export async function POST(request: NextRequest) {
 
     // 5. Resolve creator ids for ALL candidates, excluded ones included: an
     // entity-excluded handle already in the database still earns its edges.
-    const creatorIds = await resolveCreatorIds(candidateHandles);
+    const creators = await resolveCreators(candidateHandles);
 
-    const knownImportable = importable.filter(h => creatorIds.has(h));
-    const allNewHandles = importable.filter(h => !creatorIds.has(h));
+    const knownImportable = importable.filter(h => creators.has(h));
+    const allNewHandles = importable.filter(h => !creators.has(h));
     const newHandles = allNewHandles.slice(0, MAX_NEW_CREATORS_PER_BRAND);
 
     // 6. Cancellation point.
@@ -441,19 +464,21 @@ export async function POST(request: NextRequest) {
       : await importNewCreators(newHandles, range);
 
     if (importResult.saved > 0) {
-      const refreshed = await resolveCreatorIds(newHandles);
-      refreshed.forEach((creatorId, handle) => creatorIds.set(handle, creatorId));
+      // Re-read after the import so newly created profiles bring their freshly
+      // scraped follower count with them.
+      const refreshed = await resolveCreators(newHandles);
+      refreshed.forEach((creator, handle) => creators.set(handle, creator));
     }
 
     // 7. Record the edges.
-    const edges = buildEdges(perPost, brandId, creatorIds);
+    const edges = buildEdges(perPost, brandId, creators);
 
     // Which of those edges came from candidates the entity filter rejected —
     // i.e. brand intelligence captured without creating a creator record.
     const excludedCreatorIds = new Set(
-      [...creatorIds.entries()]
+      [...creators.entries()]
         .filter(([handle]) => entityExcluded.has(handle))
-        .map(([, creatorId]) => creatorId)
+        .map(([, creator]) => creator.creatorId)
     );
     const edgesFromEntityExcluded = edges.filter(e =>
       excludedCreatorIds.has(e.creator_id as string)
@@ -497,6 +522,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 9. Refresh this brand's casting profile from its edges. Writes only
+    // casting_* columns; never calls recalculate_brand_stats().
+    let casting = null;
+    try {
+      casting = await recomputeCastingProfile(brandId, { range });
+    } catch (err: any) {
+      console.error(`Failed to recompute casting profile for ${brandHandle}:`, err.message);
+    }
+
     return NextResponse.json({
       handle: brandHandle,
       brandId,
@@ -527,6 +561,7 @@ export async function POST(request: NextRequest) {
       edgesDuplicate: edges.length - edgesWritten,
       edgesFromEntityExcluded,
 
+      casting,
       fieldCoverage,
       durationMs: Date.now() - started,
     });
