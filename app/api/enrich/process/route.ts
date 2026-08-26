@@ -98,24 +98,26 @@ function mapTikTokPost(post: any, socialProfileId: string) {
   const hashtagsFromCaption = extractHashtags(caption);
   const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
 
-  // TikTok captions render mentions as @DisplayName, not @username — "@Miss
-  // Circle" or "@L'Oréal" — so parsing the caption yields display text
-  // truncated at the first illegal character ("miss", "l"). The actor resolves
-  // the real usernames in detailedMentions/mentions; use those.
+  // TikTok captions render mentions as @DisplayName, not @username, so parsing
+  // the caption yields display text truncated at the first illegal character:
+  // "@Chester Cheetah" became "chester".
   //
-  // The caption fallback fires only when the actor supplies NEITHER field,
-  // which means an older actor build. An actor that returns an empty array is
-  // reporting "no mentions", and must not be second-guessed by the regex that
-  // caused the problem.
-  const hasActorMentions =
-    Array.isArray(post.detailedMentions) || Array.isArray(post.mentions);
-
-  const taggedAccounts = hasActorMentions
-    ? [...new Set([
-        ...handlesFromActorList(post.detailedMentions),
-        ...handlesFromActorList(post.mentions),
-      ])]
-    : extractMentions(caption);
+  // Only detailedMentions carries real usernames. Verified against a live
+  // scrape of that exact post:
+  //
+  //   caption           "@Chester Cheetah @Doritos @RUFFLES"
+  //   mentions[]        ["@Chester Cheetah", "@Doritos", "@RUFFLES"]   display names
+  //   detailedMentions  name=cheetos / doritos / officialruffles       usernames
+  //
+  // So mentions[] is NOT a usable second source: it would miss "cheetos"
+  // entirely and yield "ruffles" for an account actually called
+  // "officialruffles". It is used only when detailedMentions is absent, where
+  // a one-word display name is at least more often right than a truncation.
+  const taggedAccounts = Array.isArray(post.detailedMentions)
+    ? handlesFromActorList(post.detailedMentions)
+    : Array.isArray(post.mentions)
+      ? handlesFromActorList(post.mentions)
+      : extractMentions(caption);
 
   const ownerUsername = post.authorMeta?.name || post.author?.uniqueId || post.uniqueId || '';
 
