@@ -71,6 +71,9 @@ const NON_CREATOR_ENTITY_TYPES = ['brand', 'celebrity', 'media', 'venue', 'fragm
  */
 const TRUSTED_BRAND_DATA_SOURCES = ['sponsorship_detection'];
 
+/** Out-of-range examples surfaced per brand, per direction. */
+const SAMPLES_PER_DIRECTION = 12;
+
 /** Guard against a single post tagging an implausible number of accounts. */
 const MAX_NEW_CREATORS_PER_BRAND = 60;
 
@@ -253,10 +256,16 @@ async function importNewCreators(
     else if (importStatus === 'out_of_range_low') outOfRangeLow++;
     else inRange++;
 
-    if (importStatus !== 'active' && outOfRangeSamples.length < 12) {
-      outOfRangeSamples.push({
-        handle, followerCount: mapped.followerCount, status: importStatus,
-      });
+    // Cap per direction, not overall: a shared cap would let a brand tagging
+    // a dozen mega-accounts crowd the small ones out of the sample entirely,
+    // and the below-min accounts are the ones worth eyeballing for promotion.
+    if (importStatus !== 'active') {
+      const sameDirection = outOfRangeSamples.filter(s => s.status === importStatus).length;
+      if (sameDirection < SAMPLES_PER_DIRECTION) {
+        outOfRangeSamples.push({
+          handle, followerCount: mapped.followerCount, status: importStatus,
+        });
+      }
     }
 
     creators.push({

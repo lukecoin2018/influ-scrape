@@ -197,10 +197,17 @@ export default function BrandFeedPage() {
       entityExcluded: 0, edges: 0, edgesFromExcluded: 0, known: 0, stubs: 0 }
   );
 
-  const outOfRangeSamples = results
+  // Kept apart rather than one ranked list: an eight-million-follower account
+  // and a 600-follower one are different problems, and sorting them together
+  // buries every small account below the celebrities.
+  const samplesFor = (status: string) => results
     .flatMap(r => r.outOfRangeSamples || [])
+    .filter(c => c.status === status)
     .sort((a, b) => b.followerCount - a.followerCount)
-    .slice(0, 12);
+    .slice(0, 15);
+
+  const samplesHigh = samplesFor('out_of_range_high');
+  const samplesLow = samplesFor('out_of_range_low');
 
   const coverage = results.reduce(
     (acc, r) => ({
@@ -504,12 +511,12 @@ export default function BrandFeedPage() {
               </div>
               <div className="text-center">
                 <div className="text-3xl font-bold text-amber-500">{per(totals.outOfRangeHigh)}</div>
-                <div className="text-xs text-slate-500">Above range, recorded only</div>
+                <div className="text-xs text-slate-500">Above max, recorded only</div>
                 <div className="text-xs text-slate-400">{totals.outOfRangeHigh} too big</div>
               </div>
               <div className="text-center">
                 <div className="text-3xl font-bold text-sky-500">{per(totals.outOfRangeLow)}</div>
-                <div className="text-xs text-slate-500">Below range, recorded only</div>
+                <div className="text-xs text-slate-500">Below min, recorded only</div>
                 <div className="text-xs text-slate-400">{totals.outOfRangeLow} may grow in</div>
               </div>
               <div className="text-center">
@@ -544,29 +551,50 @@ export default function BrandFeedPage() {
           </div>
         )}
 
-        {/* What got skipped on size — visible, not silent */}
-        {outOfRangeSamples.length > 0 && (
+        {/* What got skipped on size — visible, not silent, and not conflated */}
+        {(samplesHigh.length > 0 || samplesLow.length > 0) && (
           <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
             <h2 className="text-lg font-bold text-slate-800 mb-1">Out-of-range imports</h2>
-            <p className="text-xs text-slate-500 mb-4">
-              Imported and credited with their partnership edges, but marked so enrichment,
-              intelligence and embeddings skip them.
+            <p className="text-xs text-slate-500 mb-5">
+              All of these were imported and credited with their partnership edges. They are
+              marked so enrichment, intelligence and embeddings skip them.
             </p>
-            <div className="flex flex-wrap gap-2">
-              {outOfRangeSamples.map((c, i) => (
-                <span
-                  key={i}
-                  className={`text-xs px-2 py-1 rounded border ${
-                    c.status === 'out_of_range_high'
-                      ? 'bg-amber-50 border-amber-200 text-amber-800'
-                      : 'bg-sky-50 border-sky-200 text-sky-800'
-                  }`}
-                >
-                  @{c.handle} · {c.followerCount.toLocaleString()}
-                  <span className="opacity-60"> · {c.status === 'out_of_range_high' ? 'above' : 'below'}</span>
-                </span>
-              ))}
-            </div>
+
+            {samplesHigh.length > 0 && (
+              <div className="mb-5">
+                <div className="flex items-baseline gap-2 mb-2">
+                  <h3 className="text-sm font-semibold text-amber-700">Above max</h3>
+                  <span className="text-xs text-slate-400">
+                    {totals.outOfRangeHigh} this run &middot; celebrities, brand accounts and mega-creators
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {samplesHigh.map((c, i) => (
+                    <span key={i} className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-2 py-1 rounded">
+                      @{c.handle} &middot; {c.followerCount.toLocaleString()}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {samplesLow.length > 0 && (
+              <div>
+                <div className="flex items-baseline gap-2 mb-2">
+                  <h3 className="text-sm font-semibold text-sky-700">Below min</h3>
+                  <span className="text-xs text-slate-400">
+                    {totals.outOfRangeLow} this run &middot; may grow into range and be promoted later
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {samplesLow.map((c, i) => (
+                    <span key={i} className="text-xs bg-sky-50 border border-sky-200 text-sky-800 px-2 py-1 rounded">
+                      @{c.handle} &middot; {c.followerCount.toLocaleString()}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -635,8 +663,8 @@ export default function BrandFeedPage() {
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="Dropped by brand_aliases / brands classification, before any profile scrape">Entity&nbsp;excl.</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Known</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles inside the follower range — imported and queued for enrichment">In&nbsp;range</th>
-                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles above the follower max — imported with edges, excluded from pipelines">Above</th>
-                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles below the follower min — imported with edges, excluded from pipelines; may grow into range later">Below</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles above the follower max — imported with edges, excluded from pipelines">Above&nbsp;max</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles below the follower min — imported with edges, excluded from pipelines; may grow into range later">Below&nbsp;min</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Edges</th>
                   </tr>
                 </thead>
