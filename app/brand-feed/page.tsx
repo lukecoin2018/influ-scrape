@@ -89,6 +89,12 @@ export default function BrandFeedPage() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [queueInfo, setQueueInfo] = useState<string>('');
   const [startError, setStartError] = useState<string | null>(null);
+  // Covers the gap between the click and runner.isRunning going true. The
+  // queue build is a ~1s round trip, and until it resolves the runner has not
+  // started, so a button disabled only on isRunning stays live and a second
+  // click starts a second run. The core's re-entrancy guard is the real
+  // defence; this stops the click from being accepted in the first place.
+  const [isStarting, setIsStarting] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -106,9 +112,13 @@ export default function BrandFeedPage() {
   }, [fetchStatus]);
 
   const processItem = useCallback(
-    async (item: QueueItem): Promise<BrandResult> => {
+    async (item: QueueItem, _index: number, signal: AbortSignal): Promise<BrandResult> => {
       const res = await fetch('/api/brand-feed/process', {
         method: 'POST',
+        // Stop aborts this, which both frees the loop immediately and lets the
+        // route see the disconnect and skip the profile scrape it has not
+        // started yet.
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           handle: item.handle,
@@ -137,6 +147,8 @@ export default function BrandFeedPage() {
   });
 
   const handleStart = async () => {
+    if (isStarting || runner.isRunning) return;
+    setIsStarting(true);
     setStartError(null);
     setQueueInfo('');
     runner.reset();
@@ -168,10 +180,15 @@ export default function BrandFeedPage() {
           `${data.orphansInQueue} orphan alias${data.orphansInQueue === 1 ? '' : 'es'} (stub rows will be created)`
       );
 
+      // Released before the run so the button reflects runner.isRunning from
+      // here on; the core's guard covers the handover.
+      setIsStarting(false);
       await runner.start(data.items as QueueItem[]);
       fetchStatus();
     } catch (err) {
       setStartError(err instanceof Error ? err.message : 'Failed to build queue');
+    } finally {
+      setIsStarting(false);
     }
   };
 
@@ -220,6 +237,7 @@ export default function BrandFeedPage() {
     { posts: 0, withTaggedUsers: 0, withCoauthorProducers: 0, withMentions: 0, withCaption: 0 }
   );
 
+  const busy = isStarting || runner.isRunning;
   const per = (n: number) => (results.length > 0 ? (n / results.length).toFixed(1) : '—');
   const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
   const activeScope = status?.scopes?.[scope];
@@ -302,7 +320,7 @@ export default function BrandFeedPage() {
                       checked={scope === opt.value}
                       onChange={() => setScope(opt.value)}
                       className="mt-0.5 accent-violet-600"
-                      disabled={runner.isRunning}
+                      disabled={busy}
                     />
                     <div>
                       <div className="font-medium text-sm text-slate-800">{opt.label}</div>
@@ -324,7 +342,7 @@ export default function BrandFeedPage() {
                       checked={order === opt.value}
                       onChange={() => setOrder(opt.value)}
                       className="mt-0.5 accent-violet-600"
-                      disabled={runner.isRunning}
+                      disabled={busy}
                     />
                     <div>
                       <div className="font-medium text-sm text-slate-800">{opt.label}</div>
@@ -346,7 +364,7 @@ export default function BrandFeedPage() {
                 min={1}
                 max={2000}
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
-                disabled={runner.isRunning}
+                disabled={busy}
               />
               {activeScope && (
                 <p className="text-xs text-slate-500 mt-1">
@@ -363,7 +381,7 @@ export default function BrandFeedPage() {
                 min={1}
                 max={50}
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
-                disabled={runner.isRunning}
+                disabled={busy}
               />
               <p className="text-xs text-slate-500 mt-1">
                 Est. ~${(batchSize * postsPerBrand * 0.0027).toFixed(2)} of post scraping
@@ -377,7 +395,7 @@ export default function BrandFeedPage() {
                   checked={detailed}
                   onChange={e => setDetailed(e.target.checked)}
                   className="mt-0.5 accent-violet-600"
-                  disabled={runner.isRunning}
+                  disabled={busy}
                 />
                 <span className="text-sm text-slate-700">
                   Use detailedData
@@ -407,7 +425,7 @@ export default function BrandFeedPage() {
                   min={0}
                   step={1000}
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
-                  disabled={runner.isRunning}
+                  disabled={busy}
                 />
               </div>
               <div>
@@ -419,7 +437,7 @@ export default function BrandFeedPage() {
                   min={1}
                   step={1000}
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500"
-                  disabled={runner.isRunning}
+                  disabled={busy}
                 />
               </div>
             </div>
@@ -435,17 +453,17 @@ export default function BrandFeedPage() {
               placeholder="@loccitane&#10;glossier"
               rows={3}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 font-mono text-sm"
-              disabled={runner.isRunning}
+              disabled={busy}
             />
           </div>
 
           <div className="flex gap-3">
             <button
               onClick={handleStart}
-              disabled={runner.isRunning}
+              disabled={busy}
               className="flex-1 px-6 py-4 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
             >
-              {runner.isRunning ? 'Scraping brand feeds…' : 'Start Brand Feed Discovery'}
+              {isStarting ? 'Building queue…' : runner.isRunning ? 'Scraping brand feeds…' : 'Start Brand Feed Discovery'}
             </button>
             {runner.isRunning && (
               <button

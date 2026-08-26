@@ -407,8 +407,26 @@ export async function POST(request: NextRequest) {
     const allNewHandles = importable.filter(h => !creatorIds.has(h));
     const newHandles = allNewHandles.slice(0, MAX_NEW_CREATORS_PER_BRAND);
 
-    // 6. Scrape and import the new ones, flagging by follower range.
-    const importResult = await importNewCreators(newHandles, range);
+    // 6. Cancellation point.
+    //
+    // A brand costs two Apify runs: the post scrape above, and the profile
+    // scrape below. The post scrape is already paid for by the time we get
+    // here, so its edges are still recorded — but if the client has gone
+    // away (Stop aborts the fetch, which aborts request.signal) the profile
+    // scrape has not started and is skipped. That is the billing this saves.
+    //
+    // Best-effort: request.signal fires on client disconnect, but a platform
+    // that buffers the request may not surface it. Nothing breaks if it never
+    // fires — the run simply completes as before.
+    const abortedMidItem = request.signal?.aborted === true;
+
+    const importResult = abortedMidItem
+      ? {
+          attempted: 0, saved: 0, failed: 0,
+          inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
+          outOfRangeSamples: [], errors: ['cancelled before profile scrape'],
+        }
+      : await importNewCreators(newHandles, range);
 
     if (importResult.saved > 0) {
       const refreshed = await resolveCreatorIds(newHandles);
@@ -445,19 +463,27 @@ export async function POST(request: NextRequest) {
 
     // 8. Stamp the feed timestamp. This is the ONLY brands column written on
     // an existing row — statistics columns are left entirely alone.
-    const { error: stampError } = await supabase
-      .from('brands')
-      .update({ feed_scraped_at: new Date().toISOString() })
-      .eq('id', brandId);
+    //
+    // Skipped when cancelled mid-item: this brand was only partly processed,
+    // so leaving feed_scraped_at unset keeps it in the "never scraped" queue
+    // for a later run. The edges written above are not lost — the unique
+    // index makes re-recording them a no-op.
+    if (!abortedMidItem) {
+      const { error: stampError } = await supabase
+        .from('brands')
+        .update({ feed_scraped_at: new Date().toISOString() })
+        .eq('id', brandId);
 
-    if (stampError) {
-      console.error(`Failed to stamp feed_scraped_at for ${brandHandle}:`, stampError.message);
+      if (stampError) {
+        console.error(`Failed to stamp feed_scraped_at for ${brandHandle}:`, stampError.message);
+      }
     }
 
     return NextResponse.json({
       handle: brandHandle,
       brandId,
       brandCreated,
+      cancelledMidItem: abortedMidItem,
       postsScraped: rawPosts.length,
       range,
 
