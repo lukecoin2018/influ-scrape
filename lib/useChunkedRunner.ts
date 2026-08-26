@@ -1,53 +1,37 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createChunkedRunner,
+  type ChunkedRunnerCore,
+  type RunnerItemError,
+  type RunnerOptions,
+  type RunnerProgress,
+  type RunnerStatus,
+} from './chunkedRunnerCore';
+
+export type {
+  RunnerStatus,
+  RunnerProgress,
+  RunnerItemError,
+} from './chunkedRunnerCore';
 
 /**
- * Chunked sequential runner.
+ * React wrapper over the pure runner in lib/chunkedRunnerCore.
  *
- * Generalises the loop that the Intelligence location runner
- * (app/intelligence/page.tsx runLocFull), the Locations page
- * (app/extract-locations/page.tsx runBatch) and the Enrich page
- * (app/enrich/page.tsx startEnrichment) each hand-roll today:
+ * Generalises the loop that the Intelligence location runner, the Locations
+ * page and the Enrich page each hand-roll: walk a list in chunks, process one
+ * item at a time (never fanned out), catch per item so one failure cannot
+ * abort the batch, pause between chunks, and report progress live.
  *
- *   - walk a list of items in chunks
- *   - process each item sequentially (one Apify run at a time, never fanned out)
- *   - catch per item, so one failure never aborts the batch
- *   - pause between chunks to stay clear of rate limits
- *   - surface live progress while it runs
+ * All run state lives in the core, not in React state: the loop has to
+ * observe a stop request synchronously, and a state value captured in a
+ * closure would stay stale until the next render.
  *
- * This is new code. The three existing runners are deliberately left alone —
- * the Intelligence one in particular is entangled with location-specific
- * state (byCountry merging, a hardcoded LOC_FULL_TOTAL) and retrofitting it
- * belongs in its own change.
- *
- * A chunkSize of 1 gives the strictly-one-at-a-time shape the Enrich page uses.
+ * The three existing runners are deliberately left alone.
  */
 
-export type RunnerStatus = 'idle' | 'running' | 'done' | 'stopped';
-
-export interface RunnerItemError {
-  item: string;
-  message: string;
-}
-
-export interface RunnerProgress {
-  done: number;
-  total: number;
-  succeeded: number;
-  failed: number;
-}
-
-export interface ChunkedRunnerOptions<TItem, TResult> {
-  /** Items per chunk. Items within a chunk still run one after another. */
-  chunkSize: number;
-  /** Pause between chunks, in ms. Skipped after the final chunk. */
-  delayMs: number;
-  /** Processes one item. Throwing marks that item failed and continues. */
-  processItem: (item: TItem, index: number) => Promise<TResult>;
-  /** Label for progress display and error rows. */
-  labelFor: (item: TItem) => string;
-}
+export type ChunkedRunnerOptions<TItem, TResult> = RunnerOptions<TItem, TResult>;
 
 export interface ChunkedRunner<TItem, TResult> {
   status: RunnerStatus;
@@ -65,107 +49,54 @@ export interface ChunkedRunner<TItem, TResult> {
 export function useChunkedRunner<TItem, TResult>(
   options: ChunkedRunnerOptions<TItem, TResult>
 ): ChunkedRunner<TItem, TResult> {
-  const { chunkSize, delayMs, processItem, labelFor } = options;
-
   const [status, setStatus] = useState<RunnerStatus>('idle');
   const [progress, setProgress] = useState<RunnerProgress>({
-    done: 0,
-    total: 0,
-    succeeded: 0,
-    failed: 0,
+    done: 0, total: 0, succeeded: 0, failed: 0,
   });
   const [results, setResults] = useState<TResult[]>([]);
   const [errors, setErrors] = useState<RunnerItemError[]>([]);
   const [currentLabel, setCurrentLabel] = useState('');
   const [message, setMessage] = useState('');
 
-  // Ref, not state: the loop needs to observe a stop request mid-run, and a
-  // state value captured in the closure would stay stale until the next render.
-  const cancelRef = useRef(false);
+  // Fresh options are read through a ref at the start of each run, so the
+  // core never has to be rebuilt when a dependency of processItem changes.
+  // Rebuilding it would drop the running flag and reopen the double-run
+  // window this whole structure exists to close.
+  //
+  // Synced in an effect rather than assigned during render: writing to a ref
+  // while rendering is unsafe under concurrent React.
+  const optionsRef = useRef(options);
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
-  const reset = useCallback(() => {
-    cancelRef.current = false;
-    setStatus('idle');
-    setProgress({ done: 0, total: 0, succeeded: 0, failed: 0 });
-    setResults([]);
-    setErrors([]);
-    setCurrentLabel('');
-    setMessage('');
-  }, []);
+  // State setters are stable, so these never need rebuilding.
+  const events = useMemo(() => ({
+    onStatus: setStatus,
+    onProgress: setProgress,
+    onResult: (result: TResult) => setResults(prev => [...prev, result]),
+    onError: (error: RunnerItemError) => setErrors(prev => [...prev, error]),
+    onLabel: setCurrentLabel,
+    onMessage: setMessage,
+    onClear: () => { setResults([]); setErrors([]); },
+  }), []);
 
-  const stop = useCallback(() => {
-    cancelRef.current = true;
-    setMessage('Stopping after the current item…');
-  }, []);
-
-  const start = useCallback(
-    async (items: TItem[]) => {
-      cancelRef.current = false;
-      setStatus('running');
-      setResults([]);
-      setErrors([]);
-
-      const total = items.length;
-      setProgress({ done: 0, total, succeeded: 0, failed: 0 });
-
-      if (total === 0) {
-        setStatus('done');
-        setMessage('Nothing to run.');
-        return;
-      }
-
-      let succeeded = 0;
-      let failed = 0;
-      let done = 0;
-
-      const chunks: TItem[][] = [];
-      for (let i = 0; i < total; i += chunkSize) {
-        chunks.push(items.slice(i, i + chunkSize));
-      }
-
-      setMessage(`Starting ${total} item${total === 1 ? '' : 's'}…`);
-
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-        if (cancelRef.current) break;
-
-        for (const item of chunks[chunkIndex]) {
-          if (cancelRef.current) break;
-
-          const label = labelFor(item);
-          setCurrentLabel(label);
-          setMessage(`Processing ${label} (${done + 1} of ${total})…`);
-
-          try {
-            const result = await processItem(item, done);
-            succeeded++;
-            setResults(prev => [...prev, result]);
-          } catch (err) {
-            failed++;
-            const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-            setErrors(prev => [...prev, { item: label, message: errorMessage }]);
-          }
-
-          done++;
-          setProgress({ done, total, succeeded, failed });
-        }
-
-        const isLastChunk = chunkIndex === chunks.length - 1;
-        if (!isLastChunk && !cancelRef.current && delayMs > 0) {
-          setMessage(`Pausing ${Math.round(delayMs / 1000)}s between chunks…`);
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-      }
-
-      const stopped = cancelRef.current;
-      setCurrentLabel('');
-      setStatus(stopped ? 'stopped' : 'done');
-      setMessage(
-        `${stopped ? 'Stopped' : 'Complete'} — ${succeeded} succeeded, ${failed} failed` +
-          `${stopped ? `, ${total - done} not attempted` : ''}.`
+  // Built on first use rather than during render, so the ref is only ever
+  // touched from an event handler.
+  const coreRef = useRef<ChunkedRunnerCore<TItem> | null>(null);
+  const getCore = useCallback(() => {
+    if (!coreRef.current) {
+      coreRef.current = createChunkedRunner<TItem, TResult>(
+        () => optionsRef.current,
+        events
       );
-    },
-    [chunkSize, delayMs, processItem, labelFor]
-  );
+    }
+    return coreRef.current;
+  }, [events]);
+
+  const start = useCallback((items: TItem[]) => getCore().start(items), [getCore]);
+  const stop = useCallback(() => getCore().stop(), [getCore]);
+  const reset = useCallback(() => getCore().reset(), [getCore]);
 
   return {
     status,
