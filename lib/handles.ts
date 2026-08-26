@@ -38,6 +38,83 @@ export function handleRejectionReason(handle: string): string | null {
   return null;
 }
 
+/**
+ * Normalises a single token to a usable handle, or null.
+ *
+ * Lowercases, strips a leading @ and trailing dots, then validates. Shared by
+ * every path that turns scraped or typed text into a handle, so they cannot
+ * drift apart on what counts as legal.
+ *
+ * TikTok usernames use the same character set as Instagram (letters, digits,
+ * period, underscore) with a shorter max, so the Instagram rule is a safe
+ * superset for both.
+ */
+export function normaliseHandleToken(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+
+  const handle = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '')
+    .replace(/\.+$/, '');
+
+  return isValidInstagramHandle(handle) ? handle : null;
+}
+
+/**
+ * Pulls handles out of an actor-supplied array.
+ *
+ * Scrapers return these as objects ({ username }, { name }, { uniqueId }) or
+ * as bare strings depending on the actor and field; anything that does not
+ * normalise to a legal handle is dropped.
+ */
+export function handlesFromActorList(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+
+  return list
+    .map(entry => {
+      if (typeof entry === 'string') return normaliseHandleToken(entry);
+      if (entry && typeof entry === 'object') {
+        const o = entry as Record<string, unknown>;
+        return normaliseHandleToken(o.username ?? o.uniqueId ?? o.name ?? o.nickname);
+      }
+      return null;
+    })
+    .filter((h): h is string => h !== null);
+}
+
+/**
+ * Handles mentioned in a caption.
+ *
+ * Two rules, and the second matters as much as the first:
+ *
+ *  1. Only legal username characters are captured. The previous pattern also
+ *     accepted accents, apostrophes and hyphens, which no platform permits in
+ *     a username — it was lifting brand NAMES out of caption prose.
+ *
+ *  2. The match must END at a word boundary. Narrowing the character class
+ *     alone does not reject "@loréal" — it truncates it to "lor", trading an
+ *     invalid handle for a meaningless fragment, which is the same class of
+ *     junk as "the", "one" and "la". The negative lookahead drops the token
+ *     entirely when a word character follows, so "@loréal", "@coca-cola" and
+ *     "@kiehl's" yield nothing rather than a stub.
+ *
+ * A trailing dot is still fine: "@brandname." captures "brandname." — the dot
+ * is in the class — and the trailing dot is stripped on normalisation.
+ *
+ * What this CANNOT fix is a display name broken by a space: "@Huda Beauty"
+ * legitimately terminates at the space and yields "huda". That is why the
+ * TikTok path reads the actor's resolved mention fields instead of the
+ * caption; captions there carry display names, not usernames.
+ */
+export function extractMentionsFromCaption(caption: string): string[] {
+  const pattern = /@[a-zA-Z0-9._]+(?![A-Za-z0-9\u00C0-\u024F'\u2019-])/g;
+  const matches = (caption || '').match(pattern) || [];
+  return [...new Set(
+    matches.map(normaliseHandleToken).filter((h): h is string => h !== null)
+  )];
+}
+
 export interface ParsedHandles {
   valid: string[];
   invalid: { input: string; reason: string }[];
