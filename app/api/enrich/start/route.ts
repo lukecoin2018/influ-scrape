@@ -22,6 +22,7 @@ export async function POST(request: NextRequest) {
         .from('social_profiles')
         .select('handle')
         .eq('platform', platform)
+        .eq('import_status', 'active')
         .lt('enriched_at', cutoff)
         .order('enriched_at', { ascending: true })
         .limit(batchSize);
@@ -43,6 +44,7 @@ export async function POST(request: NextRequest) {
           .from('social_profiles')
           .select('handle')
           .eq('platform', platform)
+          .eq('import_status', 'active')
           .is('enriched_at', null)
           .in('creator_id', featuredIds)
           .limit(batchSize);
@@ -57,6 +59,7 @@ export async function POST(request: NextRequest) {
           .from('social_profiles')
           .select('handle')
           .eq('platform', platform)
+          .eq('import_status', 'active')
           .is('enriched_at', null)
           .not('handle', 'in', `(${featuredHandles.map(h => `"${h}"`).join(',')})`)
           .limit(remaining);
@@ -72,6 +75,7 @@ export async function POST(request: NextRequest) {
         .from('social_profiles')
         .select('handle')
         .eq('platform', platform)
+        .eq('import_status', 'active')
         .is('enriched_at', null)
         .limit(batchSize);
 

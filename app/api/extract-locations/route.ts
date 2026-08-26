@@ -81,6 +81,7 @@ export async function GET(request: Request) {
     const { data, error: err } = await supabase
       .from('social_profiles')
       .select('id, handle, platform, ai_summary, creator_id')
+      .eq('import_status', 'active')
       .is('detected_country', null)
       .not('ai_summary', 'is', null)
       .limit(500);
@@ -96,6 +97,7 @@ export async function GET(request: Request) {
     const { data, error: err } = await supabase
       .from('social_profiles')
       .select('id, handle, platform, ai_summary, creator_id')
+      .eq('import_status', 'active')
       .is('detected_country', null)
       .not('ai_summary', 'is', null)
       .range(offset, offset + limit - 1);

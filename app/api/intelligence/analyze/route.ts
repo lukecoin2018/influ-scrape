@@ -388,6 +388,7 @@ export async function POST(request: Request) {
     const { data: candidates, error: candidatesError } = await supabase
       .from('social_profiles')
       .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, enriched_at, intelligence_updated_at, intelligence_data')
+      .eq('import_status', 'active')
       .not('enriched_at', 'is', null)
       .not('intelligence_updated_at', 'is', null);
 
@@ -400,6 +401,12 @@ export async function POST(request: Request) {
     let query = supabase
       .from('social_profiles')
       .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data');
+
+    // 'specific' is a deliberate manual override: a hand-typed handle wins
+    // over the import_status gate. Every other mode respects it.
+    if (mode !== 'specific') {
+      query = query.eq('import_status', 'active');
+    }
 
     if (mode === 'not_analyzed') {
       // Queue-based: intelligence_updated_at is set on every processed row,

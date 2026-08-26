@@ -6,7 +6,8 @@ export async function GET() {
   try {
     const { data, error } = await supabase
       .from('creators')
-      .select('embedded_at, id');
+      .select('embedded_at, id')
+      .eq('import_status', 'active');
 
     if (error) throw error;
 
@@ -18,6 +19,7 @@ export async function GET() {
     const { data: enrichedProfiles } = await supabase
       .from('social_profiles')
       .select('creator_id')
+      .eq('import_status', 'active')
       .not('enriched_at', 'is', null);
 
     const enrichedCreatorIds = new Set(

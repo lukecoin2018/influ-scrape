@@ -25,6 +25,7 @@ export async function getCreatorsNeedingReembedding(): Promise<CreatorNeedingRee
   const { data: profiles } = await supabase
     .from('social_profiles')
     .select('creator_id, intelligence_updated_at')
+    .eq('import_status', 'active')
     .not('intelligence_updated_at', 'is', null);
 
   const maxIntelByCreator = new Map<string, number>();
@@ -40,6 +41,7 @@ export async function getCreatorsNeedingReembedding(): Promise<CreatorNeedingRee
   const { data: creators } = await supabase
     .from('creators')
     .select('id, display_name, embedded_at')
+    .eq('import_status', 'active')
     .not('embedded_at', 'is', null);
 
   return (creators || [])
