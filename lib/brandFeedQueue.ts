@@ -26,6 +26,8 @@ export interface BrandFeedCandidate {
   feedScrapedAt: string | null;
   /** brand_aliases.creators_count — null when the handle has no alias row. */
   creatorsCount: number | null;
+  /** Posts the last scrape returned. null = not scraped since the column existed. */
+  feedPostCount: number | null;
   aliasVerified: boolean;
   isClassifiedBrand: boolean;
   totalPartnershipsDetected: number;
@@ -41,6 +43,7 @@ interface BrandRow {
   id: string;
   instagram_handle: string | null;
   feed_scraped_at: string | null;
+  feed_post_count: number | null;
   total_partnerships_detected: number | null;
 }
 
@@ -63,7 +66,7 @@ async function loadBrands(): Promise<BrandRow[]> {
   return fetchAllRows<BrandRow>(() =>
     supabase
       .from('brands')
-      .select('id, instagram_handle, feed_scraped_at, total_partnerships_detected')
+      .select('id, instagram_handle, feed_scraped_at, feed_post_count, total_partnerships_detected')
       .order('id', { ascending: true })
   );
 }
@@ -125,6 +128,7 @@ export function poolForScope(
       handle,
       brandId: brand?.id ?? null,
       feedScrapedAt: brand?.feed_scraped_at ?? null,
+      feedPostCount: brand?.feed_post_count ?? null,
       creatorsCount: alias?.creators_count ?? null,
       aliasVerified: alias?.verified === true,
       isClassifiedBrand: alias !== undefined,
@@ -192,6 +196,8 @@ export function applyOrder(
 export interface BrandFeedQueue {
   items: BrandFeedCandidate[];
   poolSize: number;
+  /** Brands dropped by the optional low-yield filter. */
+  lowYieldSkipped: number;
   neverScrapedInQueue: number;
   rescrapesInQueue: number;
   orphansInQueue: number;
@@ -200,15 +206,29 @@ export interface BrandFeedQueue {
 export async function buildBrandFeedQueue(
   scope: BrandFeedScope,
   order: BrandFeedOrder,
-  batchSize: number
+  batchSize: number,
+  /**
+   * Optional low-yield filter. Drops brands whose LAST scrape returned fewer
+   * than this many posts — the dormant/renamed-handle signal. Opt-in only:
+   * a brand can have a quiet period, so nothing excludes on this by default.
+   * Brands never scraped (null count) are always kept; absence of evidence
+   * is not evidence of a dead handle.
+   */
+  minLastPostCount?: number
 ): Promise<BrandFeedQueue> {
   const pool = await loadBrandFeedPool(scope);
-  const ordered = applyOrder(pool, order);
+
+  const eligible = typeof minLastPostCount === 'number' && minLastPostCount > 0
+    ? pool.filter(c => c.feedPostCount === null || c.feedPostCount >= minLastPostCount)
+    : pool;
+
+  const ordered = applyOrder(eligible, order);
   const items = ordered.slice(0, Math.max(0, batchSize));
 
   return {
     items,
     poolSize: ordered.length,
+    lowYieldSkipped: pool.length - eligible.length,
     neverScrapedInQueue: items.filter(i => i.feedScrapedAt === null).length,
     rescrapesInQueue: items.filter(i => i.feedScrapedAt !== null).length,
     orphansInQueue: items.filter(i => i.brandId === null).length,

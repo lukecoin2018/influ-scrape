@@ -19,6 +19,7 @@ import {
   normaliseRange,
   type FollowerRange,
 } from '@/lib/followerRange';
+import { isValidInstagramHandle } from '@/lib/handles';
 import type { InstagramProfile } from '@/lib/types';
 
 /**
@@ -372,6 +373,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'handle is required' }, { status: 400 });
     }
 
+    // Validated before anything is inserted. brands.instagram_handle is
+    // varchar(64), so an unsplit handle list used to reach the INSERT and come
+    // back as a Postgres "value too long" error attributed to the whole run
+    // rather than to the one bad entry.
+    if (!isValidInstagramHandle(brandHandle)) {
+      return NextResponse.json(
+        { error: `Not a valid Instagram handle: "${brandHandle.slice(0, 80)}"` },
+        { status: 400 }
+      );
+    }
+
     // 1. Brand row (created here for orphan aliases).
     const { brandId, created: brandCreated } = await resolveOrCreateBrand(
       brandHandle,
@@ -471,7 +483,13 @@ export async function POST(request: NextRequest) {
     if (!abortedMidItem) {
       const { error: stampError } = await supabase
         .from('brands')
-        .update({ feed_scraped_at: new Date().toISOString() })
+        .update({
+          feed_scraped_at: new Date().toISOString(),
+          // Advisory signal for spotting dormant/renamed handles. Written
+          // every scrape so the latest reading always wins; nothing filters
+          // on it unless the operator opts in.
+          feed_post_count: rawPosts.length,
+        })
         .eq('id', brandId);
 
       if (stampError) {

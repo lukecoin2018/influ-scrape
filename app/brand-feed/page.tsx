@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useChunkedRunner } from '@/lib/useChunkedRunner';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
+import { parseHandleList } from '@/lib/handles';
 
 // Chunks of 10, 2s apart — the cadence the other batch runners in this app use.
 const CHUNK_SIZE = 10;
@@ -15,6 +16,7 @@ interface QueueItem {
   handle: string;
   brandId: string | null;
   feedScrapedAt: string | null;
+  feedPostCount: number | null;
   creatorsCount: number | null;
 }
 
@@ -89,6 +91,9 @@ export default function BrandFeedPage() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [queueInfo, setQueueInfo] = useState<string>('');
   const [startError, setStartError] = useState<string | null>(null);
+  const [invalidHandles, setInvalidHandles] = useState<{ input: string; reason: string }[]>([]);
+  const [skipLowYield, setSkipLowYield] = useState(false);
+  const [minLastPostCount, setMinLastPostCount] = useState(2);
   // Covers the gap between the click and runner.isRunning going true. The
   // queue build is a ~1s round trip, and until it resolves the runner has not
   // started, so a button disabled only on isRunning stays live and a second
@@ -151,18 +156,28 @@ export default function BrandFeedPage() {
     setIsStarting(true);
     setStartError(null);
     setQueueInfo('');
+    setInvalidHandles([]);
     runner.reset();
 
-    const handles = handlesInput
-      .split('\n')
-      .map(h => h.trim())
-      .filter(Boolean);
+    // Any mix of newlines, spaces, commas and semicolons. Rejected tokens are
+    // shown individually rather than failing or silently shrinking the batch.
+    const { valid: handles, invalid } = parseHandleList(handlesInput);
+    setInvalidHandles(invalid);
+
+    if (handlesInput.trim() && handles.length === 0) {
+      setStartError('No valid handles in that list.');
+      setIsStarting(false);
+      return;
+    }
 
     try {
       const res = await fetch('/api/brand-feed/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, order, batchSize, handles }),
+        body: JSON.stringify({
+          scope, order, batchSize, handles,
+          minLastPostCount: skipLowYield ? minLastPostCount : undefined,
+        }),
       });
 
       const data = await res.json();
@@ -177,7 +192,8 @@ export default function BrandFeedPage() {
         `${data.count} of ${data.poolSize} in pool · ` +
           `${data.neverScrapedInQueue} never scraped · ` +
           `${data.rescrapesInQueue} re-scrapes · ` +
-          `${data.orphansInQueue} orphan alias${data.orphansInQueue === 1 ? '' : 'es'} (stub rows will be created)`
+          `${data.orphansInQueue} orphan alias${data.orphansInQueue === 1 ? '' : 'es'} (stub rows will be created)` +
+          (data.lowYieldSkipped ? ` · ${data.lowYieldSkipped} skipped as low-yield` : '')
       );
 
       // Released before the run so the button reflects runner.isRunning from
@@ -408,6 +424,36 @@ export default function BrandFeedPage() {
           </div>
 
           <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={skipLowYield}
+                onChange={e => setSkipLowYield(e.target.checked)}
+                className="mt-0.5 accent-violet-600"
+                disabled={busy}
+              />
+              <span className="text-sm font-medium text-slate-700">
+                Skip brands whose last scrape returned fewer than
+                <input
+                  type="number"
+                  value={minLastPostCount}
+                  onChange={e => setMinLastPostCount(Math.max(1, parseInt(e.target.value) || 1))}
+                  min={1}
+                  max={50}
+                  className="mx-2 w-16 px-2 py-0.5 border border-slate-300 rounded text-sm"
+                  disabled={busy || !skipLowYield}
+                />
+                posts
+                <span className="block text-xs font-normal text-slate-500 mt-1">
+                  Dormant, renamed and placeholder handles return 1 post and no candidates, but
+                  still cost a scrape. Off by default &mdash; a brand can have a quiet period, and
+                  brands never scraped before are always kept.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <div className="mb-5 p-4 bg-slate-50 border border-slate-200 rounded-lg">
             <label className="block text-sm font-medium text-slate-700 mb-1">Follower range</label>
             <p className="text-xs text-slate-500 mb-3">
               Applied after the profile scrape. Creators outside this range are still imported and
@@ -447,10 +493,13 @@ export default function BrandFeedPage() {
             <label className="block text-sm font-medium text-slate-700 mb-2">
               Specific brand handles (optional — overrides scope &amp; ordering)
             </label>
+            <p className="text-xs text-slate-500 mb-2">
+              Separate with spaces, commas or new lines. The @ is optional.
+            </p>
             <textarea
               value={handlesInput}
               onChange={e => setHandlesInput(e.target.value)}
-              placeholder="@loccitane&#10;glossier"
+              placeholder="@loccitane glossier, tatcha&#10;fenty"
               rows={3}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 font-mono text-sm"
               disabled={busy}
@@ -474,6 +523,23 @@ export default function BrandFeedPage() {
               </button>
             )}
           </div>
+
+          {invalidHandles.length > 0 && (
+            <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
+              <div className="font-semibold mb-1">
+                Skipped {invalidHandles.length} invalid handle{invalidHandles.length === 1 ? '' : 's'} —
+                the rest of the list ran normally:
+              </div>
+              <div className="space-y-0.5">
+                {invalidHandles.map((h, i) => (
+                  <div key={i}>
+                    <span className="font-mono">{h.input.slice(0, 60)}{h.input.length > 60 ? '…' : ''}</span>
+                    <span className="opacity-70"> — {h.reason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {startError && (
             <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
@@ -704,7 +770,12 @@ export default function BrandFeedPage() {
                           </span>
                         )}
                       </td>
-                      <td className="py-2 px-3 text-right text-slate-600">{r.postsScraped}</td>
+                      <td className={`py-2 px-3 text-right ${r.postsScraped <= 1 ? 'text-red-600 font-medium' : 'text-slate-600'}`}>
+                        {r.postsScraped}
+                        {r.postsScraped <= 1 && (
+                          <span className="ml-1 text-xs" title="Returned almost nothing — likely a dormant, renamed or placeholder handle">⚠</span>
+                        )}
+                      </td>
                       <td className="py-2 px-3 text-right text-slate-600">{r.candidatesFound}</td>
                       <td className="py-2 px-3 text-right text-slate-500">
                         {r.entityExcluded > 0 ? `−${r.entityExcluded}` : '—'}
