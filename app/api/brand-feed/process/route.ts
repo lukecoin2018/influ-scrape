@@ -37,7 +37,10 @@ import type { InstagramProfile } from '@/lib/types';
  *   2. Follower range (runs AFTER the scrape, since follower_count only
  *      arrives with the profile). Out-of-range creators are still imported
  *      and still get edges — they are just marked import_status
- *      'out_of_range' so no spend pipeline picks them up.
+ *      'out_of_range_high' or 'out_of_range_low' so no spend pipeline picks
+ *      them up. The direction is recorded because the two groups diverge:
+ *      below-range creators can grow into range and be promoted, above-range
+ *      ones are a separate mega-creator population.
  *
  * This route never touches brands' statistics columns
  * (total_partnerships_detected, avg/min/max_partner_follower_count,
@@ -202,8 +205,9 @@ interface ImportOutcome {
   saved: number;
   failed: number;
   inRange: number;
-  outOfRange: number;
-  outOfRangeSamples: { handle: string; followerCount: number }[];
+  outOfRangeHigh: number;
+  outOfRangeLow: number;
+  outOfRangeSamples: { handle: string; followerCount: number; status: string }[];
   errors: string[];
 }
 
@@ -221,7 +225,7 @@ async function importNewCreators(
   range: FollowerRange
 ): Promise<ImportOutcome> {
   const empty: ImportOutcome = {
-    attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRange: 0,
+    attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
     outOfRangeSamples: [], errors: [],
   };
   if (handles.length === 0) return empty;
@@ -234,9 +238,10 @@ async function importNewCreators(
   const profiles = await getDatasetItems<InstagramProfile>(datasetId);
 
   const creators: ImportableCreator[] = [];
-  const outOfRangeSamples: { handle: string; followerCount: number }[] = [];
+  const outOfRangeSamples: { handle: string; followerCount: number; status: string }[] = [];
   let inRange = 0;
-  let outOfRange = 0;
+  let outOfRangeHigh = 0;
+  let outOfRangeLow = 0;
 
   for (const profile of profiles) {
     const mapped = mapProfileToCreator(profile);
@@ -244,13 +249,14 @@ async function importNewCreators(
     if (!handle) continue;
 
     const importStatus = importStatusFor(mapped.followerCount, range);
-    if (importStatus === 'out_of_range') {
-      outOfRange++;
-      if (outOfRangeSamples.length < 10) {
-        outOfRangeSamples.push({ handle, followerCount: mapped.followerCount });
-      }
-    } else {
-      inRange++;
+    if (importStatus === 'out_of_range_high') outOfRangeHigh++;
+    else if (importStatus === 'out_of_range_low') outOfRangeLow++;
+    else inRange++;
+
+    if (importStatus !== 'active' && outOfRangeSamples.length < 12) {
+      outOfRangeSamples.push({
+        handle, followerCount: mapped.followerCount, status: importStatus,
+      });
     }
 
     creators.push({
@@ -279,7 +285,8 @@ async function importNewCreators(
     saved: result.saved,
     failed: result.failed,
     inRange,
-    outOfRange,
+    outOfRangeHigh,
+    outOfRangeLow,
     outOfRangeSamples,
     errors: result.errors.slice(0, 5),
   };
@@ -454,7 +461,9 @@ export async function POST(request: NextRequest) {
 
       // Two distinct outcomes for new handles
       importedInRange: importResult.inRange,
-      importedOutOfRange: importResult.outOfRange,
+      importedOutOfRangeHigh: importResult.outOfRangeHigh,
+      importedOutOfRangeLow: importResult.outOfRangeLow,
+      importedOutOfRange: importResult.outOfRangeHigh + importResult.outOfRangeLow,
       outOfRangeSamples: importResult.outOfRangeSamples,
       creatorsImported: importResult.saved,
       creatorsFailed: importResult.failed,

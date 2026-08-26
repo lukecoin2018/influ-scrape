@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import type { ImportStatus } from './followerRange';
+import { rollUpStatuses, type ImportStatus } from './followerRange';
 
 /**
  * Shared creator-import path.
@@ -68,11 +68,9 @@ export async function rollUpCreatorImportStatus(creatorId: string): Promise<Impo
     return 'active';
   }
 
-  const rows = profiles || [];
-  const rolledUp: ImportStatus =
-    rows.length > 0 && rows.every(p => p.import_status === 'out_of_range')
-      ? 'out_of_range'
-      : 'active';
+  const rolledUp = rollUpStatuses(
+    (profiles || []).map(p => p.import_status as ImportStatus)
+  );
 
   const { error: updateError } = await supabase
     .from('creators')

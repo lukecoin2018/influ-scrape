@@ -12,7 +12,17 @@
 export const DEFAULT_MIN_FOLLOWERS = 30_000;
 export const DEFAULT_MAX_FOLLOWERS = 500_000;
 
-export type ImportStatus = 'active' | 'out_of_range';
+/**
+ * Out-of-range is split by direction because the two groups have opposite
+ * futures: a below-range creator can grow into range and be promoted back to
+ * 'active', while an above-range one never will and is better treated as a
+ * separate mega-creator population.
+ *
+ * Every pipeline filter tests `import_status = 'active'`, so both out-of-range
+ * values are excluded identically without any filter needing to know about the
+ * split.
+ */
+export type ImportStatus = 'active' | 'out_of_range_high' | 'out_of_range_low';
 
 export interface FollowerRange {
   min: number;
@@ -40,7 +50,27 @@ export function importStatusFor(
   followerCount: number | null | undefined,
   range: FollowerRange
 ): ImportStatus {
-  return isInFollowerRange(followerCount, range) ? 'active' : 'out_of_range';
+  if (isInFollowerRange(followerCount, range)) return 'active';
+  return (followerCount as number) > range.max ? 'out_of_range_high' : 'out_of_range_low';
+}
+
+/** True for either out-of-range direction. */
+export function isOutOfRange(status: ImportStatus): boolean {
+  return status !== 'active';
+}
+
+/**
+ * Collapses a creator's profile statuses into one creator-level value.
+ *
+ * A creator is only out of range when every profile is. When the directions
+ * disagree — big on one platform, small on another — 'high' wins: being large
+ * anywhere makes them a mega-creator rather than someone who might grow into
+ * range.
+ */
+export function rollUpStatuses(statuses: ImportStatus[]): ImportStatus {
+  if (statuses.length === 0) return 'active';
+  if (statuses.some(s => s === 'active')) return 'active';
+  return statuses.some(s => s === 'out_of_range_high') ? 'out_of_range_high' : 'out_of_range_low';
 }
 
 /**

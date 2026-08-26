@@ -51,8 +51,10 @@ interface BrandResult {
   newHandles: number;
   newHandlesSkipped: number;
   importedInRange: number;
+  importedOutOfRangeHigh: number;
+  importedOutOfRangeLow: number;
   importedOutOfRange: number;
-  outOfRangeSamples: { handle: string; followerCount: number }[];
+  outOfRangeSamples: { handle: string; followerCount: number; status: string }[];
   creatorsImported: number;
   creatorsFailed: number;
   edgesBuilt: number;
@@ -181,6 +183,8 @@ export default function BrandFeedPage() {
       candidates: acc.candidates + r.candidatesFound,
       newHandles: acc.newHandles + r.newHandles,
       inRange: acc.inRange + r.importedInRange,
+      outOfRangeHigh: acc.outOfRangeHigh + r.importedOutOfRangeHigh,
+      outOfRangeLow: acc.outOfRangeLow + r.importedOutOfRangeLow,
       outOfRange: acc.outOfRange + r.importedOutOfRange,
       entityExcluded: acc.entityExcluded + r.entityExcluded,
       edges: acc.edges + r.edgesWritten,
@@ -189,6 +193,7 @@ export default function BrandFeedPage() {
       stubs: acc.stubs + (r.brandCreated ? 1 : 0),
     }),
     { posts: 0, candidates: 0, newHandles: 0, inRange: 0, outOfRange: 0,
+      outOfRangeHigh: 0, outOfRangeLow: 0,
       entityExcluded: 0, edges: 0, edgesFromExcluded: 0, known: 0, stubs: 0 }
   );
 
@@ -491,16 +496,21 @@ export default function BrandFeedPage() {
             <p className="text-xs text-slate-500 mb-4">
               Averages across {results.length} brand{results.length === 1 ? '' : 's'} scraped this run.
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               <div className="text-center">
                 <div className="text-3xl font-bold text-green-600">{per(totals.inRange)}</div>
                 <div className="text-xs text-slate-500">In range, imported</div>
                 <div className="text-xs text-slate-400">{totals.inRange} queued for enrichment</div>
               </div>
               <div className="text-center">
-                <div className="text-3xl font-bold text-amber-500">{per(totals.outOfRange)}</div>
-                <div className="text-xs text-slate-500">Out of range, recorded only</div>
-                <div className="text-xs text-slate-400">{totals.outOfRange} excluded from pipelines</div>
+                <div className="text-3xl font-bold text-amber-500">{per(totals.outOfRangeHigh)}</div>
+                <div className="text-xs text-slate-500">Above range, recorded only</div>
+                <div className="text-xs text-slate-400">{totals.outOfRangeHigh} too big</div>
+              </div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-sky-500">{per(totals.outOfRangeLow)}</div>
+                <div className="text-xs text-slate-500">Below range, recorded only</div>
+                <div className="text-xs text-slate-400">{totals.outOfRangeLow} may grow in</div>
               </div>
               <div className="text-center">
                 <div className="text-3xl font-bold text-slate-400">{per(totals.entityExcluded)}</div>
@@ -527,7 +537,8 @@ export default function BrandFeedPage() {
               scrape, <strong className="text-slate-700">{totals.known}</strong> already known,{' '}
               <strong className="text-green-700">{totals.inRange}</strong> newly imported inside{' '}
               {minFollowers.toLocaleString()}–{maxFollowers.toLocaleString()}, and{' '}
-              <strong className="text-amber-600">{totals.outOfRange}</strong> newly imported outside it
+              <strong className="text-amber-600">{totals.outOfRangeHigh}</strong> above it and{' '}
+              <strong className="text-sky-600">{totals.outOfRangeLow}</strong> below
               (edges kept, pipelines skipped).
             </div>
           </div>
@@ -536,15 +547,23 @@ export default function BrandFeedPage() {
         {/* What got skipped on size — visible, not silent */}
         {outOfRangeSamples.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-            <h2 className="text-lg font-bold text-slate-800 mb-1">Largest out-of-range imports</h2>
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Out-of-range imports</h2>
             <p className="text-xs text-slate-500 mb-4">
               Imported and credited with their partnership edges, but marked so enrichment,
               intelligence and embeddings skip them.
             </p>
             <div className="flex flex-wrap gap-2">
               {outOfRangeSamples.map((c, i) => (
-                <span key={i} className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-2 py-1 rounded">
+                <span
+                  key={i}
+                  className={`text-xs px-2 py-1 rounded border ${
+                    c.status === 'out_of_range_high'
+                      ? 'bg-amber-50 border-amber-200 text-amber-800'
+                      : 'bg-sky-50 border-sky-200 text-sky-800'
+                  }`}
+                >
                   @{c.handle} · {c.followerCount.toLocaleString()}
+                  <span className="opacity-60"> · {c.status === 'out_of_range_high' ? 'above' : 'below'}</span>
                 </span>
               ))}
             </div>
@@ -616,7 +635,8 @@ export default function BrandFeedPage() {
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="Dropped by brand_aliases / brands classification, before any profile scrape">Entity&nbsp;excl.</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Known</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles inside the follower range — imported and queued for enrichment">In&nbsp;range</th>
-                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles outside the follower range — imported with edges, excluded from pipelines">Out&nbsp;of&nbsp;range</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles above the follower max — imported with edges, excluded from pipelines">Above</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles below the follower min — imported with edges, excluded from pipelines; may grow into range later">Below</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Edges</th>
                   </tr>
                 </thead>
@@ -646,7 +666,10 @@ export default function BrandFeedPage() {
                       <td className="py-2 px-3 text-right text-slate-600">{r.knownCreators}</td>
                       <td className="py-2 px-3 text-right text-green-600 font-medium">{r.importedInRange}</td>
                       <td className="py-2 px-3 text-right text-amber-600 font-medium">
-                        {r.importedOutOfRange > 0 ? `−${r.importedOutOfRange}` : '—'}
+                        {r.importedOutOfRangeHigh > 0 ? `−${r.importedOutOfRangeHigh}` : '—'}
+                      </td>
+                      <td className="py-2 px-3 text-right text-sky-600 font-medium">
+                        {r.importedOutOfRangeLow > 0 ? `−${r.importedOutOfRangeLow}` : '—'}
                       </td>
                       <td className="py-2 px-3 text-right text-green-600 font-medium">
                         {r.edgesWritten}

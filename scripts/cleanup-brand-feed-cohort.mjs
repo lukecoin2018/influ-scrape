@@ -18,10 +18,15 @@
  *               'sponsorship_detection'. Other brands rows are NOT trusted —
  *               11,402 of them are enrich-pipeline stubs that include real
  *               creators.
- *   - follower: outside MIN..MAX. A follower_count of 0 or null means a failed
- *               or private scrape rather than a small account, and stays
- *               eligible — enrichment re-scrapes counts, so a bad scrape
- *               self-corrects while an exclusion would not.
+ *   - follower: outside MIN..MAX, stamped by direction as out_of_range_high
+ *               or out_of_range_low. A follower_count of 0 or null means a
+ *               failed or private scrape rather than a small account, and
+ *               stays eligible — enrichment re-scrapes counts, so a bad
+ *               scrape self-corrects while an exclusion would not.
+ *
+ * Converges rather than only adding: any profile whose stored import_status
+ * differs from the computed one is rewritten, so this also re-labels rows
+ * stamped with the earlier undivided 'out_of_range' value.
  *
  * Partnership edges are never touched: an out-of-range creator keeps their
  * brand relationships, they are just excluded from the spend pipelines.
@@ -86,22 +91,33 @@ const rows = cohort.map(p => {
   const fc = p.follower_count;
   const unknownSize = fc === null || fc === undefined || fc <= 0;
   const rangeHit = !unknownSize && (fc < MIN || fc > MAX);
-  return { ...p, entityType: entityType ?? '—', entityHit, rangeHit, unknownSize, stamp: Boolean(entityHit || rangeHit) };
+
+  // Direction comes from follower_count. An entity hit with an in-range count
+  // is filed as 'high': it is an account we do not want in the creator
+  // pipelines, and it will never grow into eligibility the way a small
+  // account can.
+  let desired = 'active';
+  if (rangeHit) desired = fc > MAX ? 'out_of_range_high' : 'out_of_range_low';
+  else if (entityHit) desired = 'out_of_range_high';
+
+  return { ...p, entityType: entityType ?? '—', entityHit, rangeHit, unknownSize, desired };
 });
 
-const toStamp = rows.filter(r => r.stamp && r.import_status !== 'out_of_range');
-const alreadyStamped = rows.filter(r => r.stamp && r.import_status === 'out_of_range');
-const keep = rows.filter(r => !r.stamp);
+// Converge: rewrite anything whose stored value differs from the computed one.
+const toStamp = rows.filter(r => r.import_status !== r.desired);
+const alreadyCorrect = rows.filter(r => r.desired !== 'active' && r.import_status === r.desired);
+const keep = rows.filter(r => r.desired === 'active');
 
 console.log('─'.repeat(92));
-console.log(`TO STAMP out_of_range${' '.repeat(45)}${toStamp.length} of ${rows.length}`);
+console.log(`TO STAMP${' '.repeat(58)}${toStamp.length} of ${rows.length}`);
 console.log('─'.repeat(92));
 for (const r of toStamp) {
   const reason = [
     r.entityHit && `entity (${r.entityHit})`,
     r.rangeHit && (r.follower_count > MAX ? `> ${fmt(MAX)}` : `< ${fmt(MIN)}`),
   ].filter(Boolean).join(' + ');
-  console.log(`  ${fmt(r.follower_count).padStart(11)}  ${r.handle.slice(0, 28).padEnd(30)}${String(r.entityType).padEnd(12)}${reason}`);
+  const from = r.import_status === 'active' ? '' : ` (was ${r.import_status})`;
+  console.log(`  ${fmt(r.follower_count).padStart(11)}  ${r.handle.slice(0, 26).padEnd(28)}${r.desired.padEnd(19)}${reason}${from}`);
 }
 
 console.log('\n' + '═'.repeat(92));
@@ -109,8 +125,10 @@ console.log(`  entity filter hit      ${rows.filter(r => r.entityHit).length}`
   + `   (${rows.filter(r => r.entityHit && r.rangeHit).length} also out of range)`);
 console.log(`  above ${fmt(MAX)}        ${rows.filter(r => r.rangeHit && r.follower_count > MAX).length}`);
 console.log(`  below ${fmt(MIN)}         ${rows.filter(r => r.rangeHit && r.follower_count > 0 && r.follower_count < MIN).length}`);
-console.log(`  TOTAL to stamp         ${toStamp.length}`
-  + (alreadyStamped.length ? `   (${alreadyStamped.length} already stamped, skipped)` : ''));
+console.log(`  -> out_of_range_high   ${rows.filter(r => r.desired === 'out_of_range_high').length}`);
+console.log(`  -> out_of_range_low    ${rows.filter(r => r.desired === 'out_of_range_low').length}`);
+console.log(`  TOTAL to write         ${toStamp.length}`
+  + (alreadyCorrect.length ? `   (${alreadyCorrect.length} already correct, skipped)` : ''));
 console.log(`  staying active         ${keep.length}`
   + `  (${keep.filter(r => r.unknownSize).length} zero/unknown followers, left eligible)`);
 console.log(`  already enriched       ${rows.filter(r => r.enriched_at).length}`);
@@ -118,21 +136,26 @@ console.log(`  already analysed       ${rows.filter(r => r.intelligence_updated_
 console.log('═'.repeat(92));
 
 if (!APPLY) { console.log('\nDRY RUN — nothing written. Re-run with --apply.'); process.exit(0); }
-if (toStamp.length === 0) { console.log('\nNothing left to stamp.'); process.exit(0); }
+if (toStamp.length === 0) { console.log('\nAlready converged — nothing to write.'); process.exit(0); }
 
 // 4. Stamp profiles
 console.log('\nApplying…');
 let stamped = 0;
-for (const batch of chunk(toStamp.map(r => r.id), 50)) {
-  const inList = batch.map(id => `"${id}"`).join(',');
-  const r = await fetch(`${U}/rest/v1/social_profiles?id=in.(${inList})`, {
-    method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-    body: JSON.stringify({ import_status: 'out_of_range' }),
-  });
-  if (!r.ok) throw new Error(`profile update failed: ${await r.text()}`);
-  stamped += (await r.json()).length;
+for (const target of ['out_of_range_high', 'out_of_range_low', 'active']) {
+  const ids = toStamp.filter(r => r.desired === target).map(r => r.id);
+  for (const batch of chunk(ids, 50)) {
+    const inList = batch.map(id => `"${id}"`).join(',');
+    const r = await fetch(`${U}/rest/v1/social_profiles?id=in.(${inList})`, {
+      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
+      body: JSON.stringify({ import_status: target }),
+    });
+    if (!r.ok) throw new Error(`profile update failed: ${await r.text()}`);
+    const n = (await r.json()).length;
+    stamped += n;
+    if (n) console.log(`  social_profiles -> ${target}: ${n}`);
+  }
 }
-console.log(`  social_profiles stamped: ${stamped}`);
+console.log(`  social_profiles written: ${stamped}`);
 
 // 5. Roll up — a creator is out only when ALL their profiles are out
 const creatorIds = [...new Set(toStamp.map(r => r.creator_id))].filter(Boolean);
@@ -145,17 +168,25 @@ for (const batch of chunk(creatorIds, 50)) {
     if (!byCreator.has(p.creator_id)) byCreator.set(p.creator_id, []);
     byCreator.get(p.creator_id).push(p.import_status);
   }
-  const allOut = [...byCreator.entries()]
-    .filter(([, statuses]) => statuses.every(s => s === 'out_of_range'))
-    .map(([id]) => id);
-  if (allOut.length === 0) continue;
-  const outList = allOut.map(id => `"${id}"`).join(',');
-  const r = await fetch(`${U}/rest/v1/creators?id=in.(${outList})`, {
-    method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-    body: JSON.stringify({ import_status: 'out_of_range' }),
-  });
-  if (!r.ok) throw new Error(`creator roll-up failed: ${await r.text()}`);
-  rolled += (await r.json()).length;
+  // A creator is out only when every profile is; 'high' wins a mixed set,
+  // matching rollUpStatuses() in lib/followerRange.ts.
+  const targets = new Map();
+  for (const [id, statuses] of byCreator.entries()) {
+    if (statuses.some(s => s === 'active')) continue;
+    targets.set(id, statuses.some(s => s === 'out_of_range_high')
+      ? 'out_of_range_high' : 'out_of_range_low');
+  }
+  for (const target of ['out_of_range_high', 'out_of_range_low']) {
+    const ids = [...targets.entries()].filter(([, t]) => t === target).map(([id]) => id);
+    if (ids.length === 0) continue;
+    const outList = ids.map(id => `"${id}"`).join(',');
+    const r = await fetch(`${U}/rest/v1/creators?id=in.(${outList})`, {
+      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
+      body: JSON.stringify({ import_status: target }),
+    });
+    if (!r.ok) throw new Error(`creator roll-up failed: ${await r.text()}`);
+    rolled += (await r.json()).length;
+  }
 }
 console.log(`  creators rolled up:      ${rolled}`);
 console.log('\nDone. Partnership edges untouched.');
