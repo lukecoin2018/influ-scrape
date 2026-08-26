@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { fetchAllRows } from './supabasePaging';
+import { DEFAULT_CASTING_SAMPLE_FLOOR } from './castingProfile';
 
 /**
  * Brand-feed queue construction.
@@ -17,7 +18,7 @@ import { fetchAllRows } from './supabasePaging';
  */
 
 export type BrandFeedScope = 'verified_brands' | 'classified_brands' | 'all_brands';
-export type BrandFeedOrder = 'never_scraped' | 'stale_first' | 'top_creators';
+export type BrandFeedOrder = 'never_scraped' | 'stale_first' | 'top_creators' | 'casting_fit';
 
 export interface BrandFeedCandidate {
   handle: string;
@@ -26,6 +27,12 @@ export interface BrandFeedCandidate {
   feedScrapedAt: string | null;
   /** brand_aliases.creators_count — null when the handle has no alias row. */
   creatorsCount: number | null;
+  /** Posts the last scrape returned. null = not scraped since the column existed. */
+  feedPostCount: number | null;
+  /** Partnered creators inside the band, from the stored casting profile. */
+  castingInRange: number | null;
+  /** Distinct partnered creators the profile was computed over. */
+  castingSampleSize: number | null;
   aliasVerified: boolean;
   isClassifiedBrand: boolean;
   totalPartnershipsDetected: number;
@@ -41,6 +48,9 @@ interface BrandRow {
   id: string;
   instagram_handle: string | null;
   feed_scraped_at: string | null;
+  feed_post_count: number | null;
+  casting_in_range_count: number | null;
+  casting_sample_size: number | null;
   total_partnerships_detected: number | null;
 }
 
@@ -63,7 +73,10 @@ async function loadBrands(): Promise<BrandRow[]> {
   return fetchAllRows<BrandRow>(() =>
     supabase
       .from('brands')
-      .select('id, instagram_handle, feed_scraped_at, total_partnerships_detected')
+      .select(
+        'id, instagram_handle, feed_scraped_at, feed_post_count, ' +
+        'casting_in_range_count, casting_sample_size, total_partnerships_detected'
+      )
       .order('id', { ascending: true })
   );
 }
@@ -125,6 +138,9 @@ export function poolForScope(
       handle,
       brandId: brand?.id ?? null,
       feedScrapedAt: brand?.feed_scraped_at ?? null,
+      feedPostCount: brand?.feed_post_count ?? null,
+      castingInRange: brand?.casting_in_range_count ?? null,
+      castingSampleSize: brand?.casting_sample_size ?? null,
       creatorsCount: alias?.creators_count ?? null,
       aliasVerified: alias?.verified === true,
       isClassifiedBrand: alias !== undefined,
@@ -162,11 +178,48 @@ const interestScore = (c: BrandFeedCandidate) =>
 const byHandle = (a: BrandFeedCandidate, b: BrandFeedCandidate) =>
   a.handle.localeCompare(b.handle);
 
+export /**
+ * Ranks by the share of a brand's partnered creators that fall inside the band.
+ *
+ * Rate, not absolute count: the queue decides which brands are worth a scrape,
+ * and rate predicts yield per scrape while a raw count mostly tracks brand
+ * size. 9 in-band out of 50 is a worse target than 6 out of 7, even though the
+ * count is higher.
+ *
+ * The rate is derived here from the stored raw counts rather than being
+ * persisted, so changing the floor never requires recomputing anything — and
+ * a brand that is 100% in-band across 4 creators cannot float to the top on a
+ * number that means nothing. Brands under the floor are not dropped; they sort
+ * after every brand that clears it, so a thin sample delays a brand rather
+ * than hiding it.
+ *
+ * Unknown snapshots stay in the denominator: a creator whose follower count we
+ * could not read is not evidence of a good fit.
+ */
+function byCastingFit(sampleFloor: number) {
+  const rank = (c: BrandFeedCandidate) => {
+    const sample = c.castingSampleSize ?? 0;
+    if (sample < sampleFloor) return -1;
+    return (c.castingInRange ?? 0) / sample;
+  };
+  return (a: BrandFeedCandidate, b: BrandFeedCandidate) => {
+    const diff = rank(b) - rank(a);
+    if (diff !== 0) return diff;
+    // Same rate: more in-band creators is the stronger signal.
+    return (b.castingInRange ?? 0) - (a.castingInRange ?? 0)
+      || (b.castingSampleSize ?? 0) - (a.castingSampleSize ?? 0)
+      || byHandle(a, b);
+  };
+}
+
 export function applyOrder(
   pool: BrandFeedCandidate[],
-  order: BrandFeedOrder
+  order: BrandFeedOrder,
+  sampleFloor: number = DEFAULT_CASTING_SAMPLE_FLOOR
 ): BrandFeedCandidate[] {
   const rows = [...pool];
+
+  if (order === 'casting_fit') return rows.sort(byCastingFit(sampleFloor));
 
   if (order === 'never_scraped') {
     return rows
@@ -192,6 +245,8 @@ export function applyOrder(
 export interface BrandFeedQueue {
   items: BrandFeedCandidate[];
   poolSize: number;
+  /** Brands dropped by the optional low-yield filter. */
+  lowYieldSkipped: number;
   neverScrapedInQueue: number;
   rescrapesInQueue: number;
   orphansInQueue: number;
@@ -200,15 +255,30 @@ export interface BrandFeedQueue {
 export async function buildBrandFeedQueue(
   scope: BrandFeedScope,
   order: BrandFeedOrder,
-  batchSize: number
+  batchSize: number,
+  /**
+   * Optional low-yield filter. Drops brands whose LAST scrape returned fewer
+   * than this many posts — the dormant/renamed-handle signal. Opt-in only:
+   * a brand can have a quiet period, so nothing excludes on this by default.
+   * Brands never scraped (null count) are always kept; absence of evidence
+   * is not evidence of a dead handle.
+   */
+  minLastPostCount?: number,
+  castingSampleFloor: number = DEFAULT_CASTING_SAMPLE_FLOOR
 ): Promise<BrandFeedQueue> {
   const pool = await loadBrandFeedPool(scope);
-  const ordered = applyOrder(pool, order);
+
+  const eligible = typeof minLastPostCount === 'number' && minLastPostCount > 0
+    ? pool.filter(c => c.feedPostCount === null || c.feedPostCount >= minLastPostCount)
+    : pool;
+
+  const ordered = applyOrder(eligible, order, castingSampleFloor);
   const items = ordered.slice(0, Math.max(0, batchSize));
 
   return {
     items,
     poolSize: ordered.length,
+    lowYieldSkipped: pool.length - eligible.length,
     neverScrapedInQueue: items.filter(i => i.feedScrapedAt === null).length,
     rescrapesInQueue: items.filter(i => i.feedScrapedAt !== null).length,
     orphansInQueue: items.filter(i => i.brandId === null).length,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { detectBrandsInPost } from '@/lib/brandDetection';
 import { recalculateCumulativeBrandFields, type StoredPostForBrandAgg } from '@/lib/brandAggregation';
+import { extractMentionsFromCaption, handlesFromActorList } from '@/lib/handles';
 
 const RECENT_POSTS_WINDOW = 15;
 
@@ -15,10 +16,15 @@ function extractHashtags(caption: string): string[] {
   return [...new Set(matches.map(h => h.slice(1).toLowerCase()))];
 }
 
-function extractMentions(caption: string): string[] {
-  const matches = caption.match(/@[\w.\u00C0-\u024F'-]+/g) || [];
-  return [...new Set(matches.map(m => m.slice(1).toLowerCase()))];
-}
+/**
+ * Caption mentions, restricted to legal username characters.
+ *
+ * The previous pattern (/@[\w.\u00C0-\u024F'-]+/) also matched accents,
+ * apostrophes and hyphens, none of which any platform allows in a username.
+ * It was lifting brand NAMES out of caption prose — "loréal", "lancôme",
+ * "kiehl's", "coca-cola" — and filing them as brand accounts.
+ */
+const extractMentions = extractMentionsFromCaption;
 
 function mapInstagramPost(post: any, socialProfileId: string) {
   const caption = post.caption || '';
@@ -27,12 +33,6 @@ function mapInstagramPost(post: any, socialProfileId: string) {
     : [];
   const hashtagsFromCaption = extractHashtags(caption);
   const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
-
-  const handlesFromActorList = (list: any): string[] =>
-    (Array.isArray(list) ? list : [])
-      .map((u: any) => (typeof u === 'string' ? u : u.username || u.name || ''))
-      .filter(Boolean)
-      .map((u: string) => u.toLowerCase().replace(/^@/, ''));
 
   // coauthorProducers is Instagram's explicit "Collab" feature: the partner
   // co-owns the post. It is the strongest partnership signal the actor returns
@@ -98,7 +98,27 @@ function mapTikTokPost(post: any, socialProfileId: string) {
   const hashtagsFromCaption = extractHashtags(caption);
   const hashtags = [...new Set([...hashtagsFromApify, ...hashtagsFromCaption])];
 
-  const taggedAccounts = extractMentions(caption);
+  // TikTok captions render mentions as @DisplayName, not @username, so parsing
+  // the caption yields display text truncated at the first illegal character:
+  // "@Chester Cheetah" became "chester".
+  //
+  // Only detailedMentions carries real usernames. Verified against a live
+  // scrape of that exact post:
+  //
+  //   caption           "@Chester Cheetah @Doritos @RUFFLES"
+  //   mentions[]        ["@Chester Cheetah", "@Doritos", "@RUFFLES"]   display names
+  //   detailedMentions  name=cheetos / doritos / officialruffles       usernames
+  //
+  // So mentions[] is NOT a usable second source: it would miss "cheetos"
+  // entirely and yield "ruffles" for an account actually called
+  // "officialruffles". It is used only when detailedMentions is absent, where
+  // a one-word display name is at least more often right than a truncation.
+  const taggedAccounts = Array.isArray(post.detailedMentions)
+    ? handlesFromActorList(post.detailedMentions)
+    : Array.isArray(post.mentions)
+      ? handlesFromActorList(post.mentions)
+      : extractMentions(caption);
+
   const ownerUsername = post.authorMeta?.name || post.author?.uniqueId || post.uniqueId || '';
 
   const detection = detectBrandsInPost({
@@ -144,18 +164,30 @@ function mapTikTokPost(post: any, socialProfileId: string) {
  * No Apify profile lookup here — that would be too slow per creator.
  * Full brand profile enrichment (follower count, bio etc.) happens when
  * Sponsorship Discovery runs, or can be triggered separately.
+ *
+ * Platform-aware: a handle detected in a TikTok post is a TikTok handle, and
+ * filing it as an Instagram one is what left 22% of verified brands pointing
+ * at Instagram accounts that may not exist. instagram_handle still carries
+ * the identity for every brand — it is the lookup key here and the join key
+ * for brand_aliases — but tiktok_handle, profile_url and mention_platforms
+ * now reflect where the brand was actually seen.
  */
 async function saveBrandsToTable(
   brandHandles: string[],
-  creatorFollowerCount: number
+  creatorFollowerCount: number,
+  platform: string
 ): Promise<void> {
   if (brandHandles.length === 0) return;
+
+  const isTikTok = platform === 'tiktok';
+  const profileUrlFor = (handle: string) =>
+    isTikTok ? `https://tiktok.com/@${handle}` : `https://instagram.com/${handle}`;
 
   for (const handle of brandHandles) {
     // Check if brand already exists
     const { data: existing } = await supabase
       .from('brands')
-      .select('id, total_partnerships_detected, avg_partner_follower_count, min_partner_follower_count, max_partner_follower_count')
+      .select('id, total_partnerships_detected, avg_partner_follower_count, min_partner_follower_count, max_partner_follower_count, tiktok_handle, mention_platforms')
       .eq('instagram_handle', handle)
       .single();
 
@@ -169,6 +201,12 @@ async function saveBrandsToTable(
       const newTotal = currentTotal + 1;
       const newAvg = Math.round((currentAvg * currentTotal + creatorFollowerCount) / newTotal);
 
+      // Appended, never overwritten: a brand seen on both platforms must end
+      // up with both, whichever order the mentions arrive in.
+      const seenPlatforms = [
+        ...new Set([...(existing.mention_platforms || []), platform]),
+      ].sort();
+
       await supabase
         .from('brands')
         .update({
@@ -176,6 +214,10 @@ async function saveBrandsToTable(
           avg_partner_follower_count: newAvg,
           min_partner_follower_count: Math.min(currentMin, creatorFollowerCount),
           max_partner_follower_count: Math.max(currentMax, creatorFollowerCount),
+          mention_platforms: seenPlatforms,
+          // Only ever set, never cleared — an Instagram-sourced mention must
+          // not wipe a TikTok handle recorded earlier.
+          ...(isTikTok && !existing.tiktok_handle ? { tiktok_handle: handle } : {}),
           last_updated_at: new Date().toISOString(),
         })
         .eq('id', existing.id);
@@ -186,8 +228,11 @@ async function saveBrandsToTable(
       await supabase
         .from('brands')
         .insert({
+          // Identity slug for every brand regardless of source platform.
           instagram_handle: handle,
-          profile_url: `https://instagram.com/${handle}`,
+          ...(isTikTok ? { tiktok_handle: handle } : {}),
+          mention_platforms: [platform],
+          profile_url: profileUrlFor(handle),
           total_partnerships_detected: 1,
           avg_partner_follower_count: creatorFollowerCount,
           min_partner_follower_count: creatorFollowerCount,
@@ -405,7 +450,7 @@ export async function POST(request: NextRequest) {
           .flatMap(p => p.detected_brands || [])
       )
     ];
-    await saveBrandsToTable(allBrandHandles, followerCount);
+    await saveBrandsToTable(allBrandHandles, followerCount, platform);
     console.log(`Saved ${allBrandHandles.length} brand handles for ${handle}`);
 
     // 5. Recalculate enrichment metrics from the database (not the scrape payload)

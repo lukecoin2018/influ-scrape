@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { parseHandleList } from '@/lib/handles';
 import {
   buildBrandFeedQueue,
   type BrandFeedScope,
@@ -8,7 +9,7 @@ import {
 } from '@/lib/brandFeedQueue';
 
 const SCOPES: BrandFeedScope[] = ['verified_brands', 'classified_brands', 'all_brands'];
-const ORDERS: BrandFeedOrder[] = ['never_scraped', 'stale_first', 'top_creators'];
+const ORDERS: BrandFeedOrder[] = ['never_scraped', 'stale_first', 'top_creators', 'casting_fit'];
 
 /**
  * Builds the brand-feed work queue. Read-only — no rows are created here,
@@ -22,19 +23,29 @@ export async function POST(request: NextRequest) {
     const scope: BrandFeedScope = SCOPES.includes(body.scope) ? body.scope : 'verified_brands';
     const order: BrandFeedOrder = ORDERS.includes(body.order) ? body.order : 'never_scraped';
     const batchSize = Math.max(1, Math.min(Number(body.batchSize) || 25, 2000));
+    const minLastPostCount = Number(body.minLastPostCount) > 0
+      ? Math.min(Number(body.minLastPostCount), 50)
+      : undefined;
     const explicitHandles: string[] = Array.isArray(body.handles) ? body.handles : [];
 
     // Explicit handles bypass scope and ordering entirely.
+    //
+    // Re-parsed here rather than trusted from the client: the same splitting
+    // and validation has to hold whoever calls this route, and an invalid
+    // handle must be reported individually instead of failing the batch.
     if (explicitHandles.length > 0) {
-      const handles = [...new Set(
-        explicitHandles
-          .map(h => String(h).trim().toLowerCase().replace(/^@/, ''))
-          .filter(Boolean)
-      )];
+      const { valid: handles, invalid } = parseHandleList(explicitHandles.join('\n'));
+
+      if (handles.length === 0) {
+        return NextResponse.json({
+          error: 'No valid handles supplied.',
+          invalid,
+        }, { status: 400 });
+      }
 
       const { data: brands } = await supabase
         .from('brands')
-        .select('id, instagram_handle, feed_scraped_at, total_partnerships_detected')
+        .select('id, instagram_handle, feed_scraped_at, feed_post_count, casting_in_range_count, casting_sample_size, total_partnerships_detected')
         .in('instagram_handle', handles);
 
       const byHandle = new Map(
@@ -47,6 +58,9 @@ export async function POST(request: NextRequest) {
           handle,
           brandId: brand?.id ?? null,
           feedScrapedAt: brand?.feed_scraped_at ?? null,
+          feedPostCount: brand?.feed_post_count ?? null,
+          castingInRange: brand?.casting_in_range_count ?? null,
+          castingSampleSize: brand?.casting_sample_size ?? null,
           creatorsCount: null,
           aliasVerified: false,
           isClassifiedBrand: false,
@@ -61,13 +75,21 @@ export async function POST(request: NextRequest) {
         handles: items.map(i => i.handle),
         count: items.length,
         poolSize: items.length,
+        invalid,
         neverScrapedInQueue: items.filter(i => i.feedScrapedAt === null).length,
         rescrapesInQueue: items.filter(i => i.feedScrapedAt !== null).length,
         orphansInQueue: items.filter(i => i.brandId === null).length,
+        lowYieldSkipped: 0,
       });
     }
 
-    const queue = await buildBrandFeedQueue(scope, order, batchSize);
+    const castingSampleFloor = Number(body.castingSampleFloor) > 0
+      ? Number(body.castingSampleFloor)
+      : undefined;
+
+    const queue = await buildBrandFeedQueue(
+      scope, order, batchSize, minLastPostCount, castingSampleFloor
+    );
 
     return NextResponse.json({
       scope,
@@ -79,6 +101,7 @@ export async function POST(request: NextRequest) {
       neverScrapedInQueue: queue.neverScrapedInQueue,
       rescrapesInQueue: queue.rescrapesInQueue,
       orphansInQueue: queue.orphansInQueue,
+      lowYieldSkipped: queue.lowYieldSkipped,
     });
   } catch (error: any) {
     console.error('Brand feed start error:', error);
