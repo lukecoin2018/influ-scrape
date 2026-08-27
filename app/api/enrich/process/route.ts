@@ -79,6 +79,21 @@ function mapInstagramPost(post: any, socialProfileId: string) {
     tagged_accounts: taggedAccounts,
     likes_count: post.likesCount || post.likes || 0,
     comments_count: post.commentsCount || post.comments || 0,
+    // ZERO on a basicData scrape. Measured: under detailedData 25,140 of
+    // 25,726 stored Video posts (98%) carry a view count; under basicData
+    // 0 of 1,060 do. basicData drops BOTH videoViewCount and videoPlayCount,
+    // not just the play count the actor's docs name.
+    //
+    // Nothing reads this today — enrichment_data.avg_views is stored but
+    // unconsumed (buildEmbeddingText uses engagement_rate,
+    // posting_frequency_per_week, content_mix, top_hashtags, detected_brands,
+    // sponsored_posts_count and days_since_last_post; the intelligence route
+    // uses none of it), and engagement_rate is (likes + comments) / posts /
+    // followers, so it is view-independent.
+    //
+    // If view-based metrics are ever wanted, note that everything scraped
+    // after the basicData default will read 0 here, and re-scraping with
+    // detailedData is the only way to recover it.
     views_count: post.videoViewCount || post.videoPlayCount || 0,
     shares_count: 0,
     saves_count: 0,
@@ -361,7 +376,25 @@ async function fetchDataset(datasetId: string): Promise<any[]> {
 
 export async function POST(request: NextRequest) {
   try {
-    const { handle, platform, postsPerCreator = 15 } = await request.json();
+    const {
+      handle,
+      platform,
+      postsPerCreator = 15,
+      // Defaults to basicData. The actor's own default is detailedData, which
+      // is a paid add-on: apify/instagram-post-scraper bills two events, "post"
+      // at $0.0017 and "post-details" at $0.001, so detailed is a 59%
+      // surcharge. Leaving it unset had been paying it on every enrichment.
+      //
+      // Nothing in the detection path needs it: is_sponsored and
+      // sponsor_signals come from detectBrandsInPost over caption, hashtags
+      // and tagged accounts, and the actor's own paid-partnership flag is
+      // never read. taggedUsers, coauthorProducers and mentions all return on
+      // basicData.
+      //
+      // What detailed DOES buy is video view counts — see the note on
+      // views_count in mapInstagramPost.
+      detailedData = false,
+    } = await request.json();
 
     if (!handle || !platform) {
       return NextResponse.json({ error: 'handle and platform are required' }, { status: 400 });
@@ -391,7 +424,11 @@ export async function POST(request: NextRequest) {
 
     if (platform === 'instagram') {
       actorId = 'apify~instagram-post-scraper';
-      input = { username: [handle], resultsLimit: postsPerCreator };
+      input = {
+        username: [handle],
+        resultsLimit: postsPerCreator,
+        dataDetailLevel: detailedData ? 'detailedData' : 'basicData',
+      };
     } else {
       actorId = 'clockworks~tiktok-profile-scraper';
       input = {

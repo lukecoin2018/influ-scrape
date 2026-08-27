@@ -115,6 +115,13 @@ node scripts/list-truncated-post-urls.mjs --out=/tmp/urls.json
 Then scrape those URLs through `clockworks/tiktok-video-scraper` in batches, and
 PATCH each `creator_posts` row by id.
 
+## Downstream work this blocks
+
+`docs/partnerships-as-source-of-truth.md` — backfilling `partnerships` from
+`creator_posts.detected_brands` cannot start until this repair lands, or ~1,143
+fragment handles become permanent brand edges in what is meant to become the
+system of record.
+
 ## Sequencing when this resumes
 
 1. This repair (`$4.68`).

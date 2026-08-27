@@ -27,6 +27,10 @@ export default function EnrichPage() {
   const [mode, setMode] = useState<Mode>('not_enriched');
   const [batchSize, setBatchSize] = useState(25);
   const [postsPerCreator, setPostsPerCreator] = useState(15);
+  // Off by default. The actor bills "post" ($0.0017) and "post-details"
+  // ($0.001) separately, so detailed is a 59% surcharge that had been paid
+  // silently because the route never set dataDetailLevel.
+  const [detailedData, setDetailedData] = useState(false);
   const [staleDays, setStaleDays] = useState(90);
   const [handlesInput, setHandlesInput] = useState('');
   const [status, setStatus] = useState<EnrichStatus | null>(null);
@@ -100,7 +104,7 @@ export default function EnrichPage() {
           const processRes = await fetch('/api/enrich/process', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ handle, platform, postsPerCreator }),
+            body: JSON.stringify({ handle, platform, postsPerCreator, detailedData }),
           });
 
           const result = await processRes.json();
@@ -312,7 +316,13 @@ export default function EnrichPage() {
                   disabled={isRunning}
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  Est. cost: ~${((batchSize * postsPerCreator) * (platform === 'instagram' ? 0.0027 : 0.001)).toFixed(2)}
+                  Est. cost: ~${(
+                    (batchSize * postsPerCreator) *
+                    (platform === 'instagram' ? (detailedData ? 0.0027 : 0.0017) : 0.001)
+                  ).toFixed(2)}
+                  {platform === 'instagram' && detailedData && (
+                    <span className="text-amber-600"> (+59% for detailed data)</span>
+                  )}
                 </p>
               </div>
             )}
@@ -331,6 +341,31 @@ export default function EnrichPage() {
               />
             </div>
           </div>
+
+          {platform === 'instagram' && (
+            <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={detailedData}
+                  onChange={e => setDetailedData(e.target.checked)}
+                  className="mt-0.5 accent-violet-600"
+                  disabled={isRunning}
+                />
+                <span className="text-sm font-medium text-slate-700">
+                  Detailed data &mdash; adds video view counts (+59% cost)
+                  <span className="block text-xs font-normal text-slate-500 mt-1">
+                    Off by default. Brand and sponsorship detection does not need it:
+                    tagged accounts, coauthors and caption mentions all return on basic data.
+                    With this off, <code className="font-mono">views_count</code> is stored as
+                    0 for every post, so <code className="font-mono">avg_views</code> will be
+                    empty for anything enriched from now on. Nothing reads that field today
+                    &mdash; but view-based metrics would need a re-scrape to recover it.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           <button
             onClick={startEnrichment}
