@@ -26,6 +26,7 @@ interface Creator {
 export default function DatabasePage() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [platformFilter, setPlatformFilter] = useState('');
@@ -62,15 +63,28 @@ export default function DatabasePage() {
   };
 
   const handleUpdateStatus = async (id: string, status: string) => {
+    setUpdateError(null);
     try {
-      await fetch('/api/database/update-creator', {
+      const res = await fetch('/api/database/update-creator', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, status }),
       });
+
+      // The response is checked before the optimistic update, not after.
+      // Applying it regardless is what made a rejected edit look like it
+      // stuck: an archived creator is not in `creators`, so the write matches
+      // nothing and comes back 409 — but the row on screen would still flip.
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setUpdateError(body.error || `Update failed (HTTP ${res.status})`);
+        return;
+      }
+
       setCreators(creators.map(c => c.id === id ? { ...c, status } : c));
     } catch (error) {
       console.error('Error updating status:', error);
+      setUpdateError(error instanceof Error ? error.message : 'Update failed');
     }
   };
 
@@ -159,6 +173,25 @@ export default function DatabasePage() {
             </div>
           </div>
         </div>
+
+        {/* A rejected edit has to be visible. Archived creators are not in
+            `creators`, so the write matches nothing and returns 409 — without
+            this the row would appear to change and silently revert on reload. */}
+        {updateError && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+            <span className="text-red-500 mt-0.5">⚠</span>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-900">Update not saved</p>
+              <p className="text-sm text-red-700 mt-0.5">{updateError}</p>
+            </div>
+            <button
+              onClick={() => setUpdateError(null)}
+              className="text-red-400 hover:text-red-600 text-sm"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Table */}
         {loading && creators.length === 0 ? (

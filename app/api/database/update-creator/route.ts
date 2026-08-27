@@ -16,10 +16,44 @@ export async function POST(request: NextRequest) {
       .update(updateData)
       .eq('id', id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) {
       throw error;
+    }
+
+    // Nothing updated. Out-of-range creators live in creators_archive, so an
+    // edit aimed at one would otherwise no-op — the caller would see success
+    // and wonder later why the change never stuck.
+    //
+    // maybeSingle() rather than single() is what makes this diagnosable:
+    // single() raises PGRST116 ("no rows returned"), which surfaces as an
+    // opaque 500 and says nothing about the creator being archived.
+    if (!data) {
+      const { data: archived } = await supabase
+        .from('creators_archive')
+        .select('id, archive_reason, display_name')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (archived) {
+        return NextResponse.json(
+          {
+            error:
+              `Creator ${archived.display_name || id} is archived (${archived.archive_reason}) ` +
+              `and is not editable here. Archived creators are outside the active follower band. ` +
+              `Promote them first with promote_creator() if they belong back in the main tables.`,
+            archived: true,
+            archiveReason: archived.archive_reason,
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: `No creator found with id ${id}` },
+        { status: 404 }
+      );
     }
 
     return NextResponse.json({ success: true, creator: data });

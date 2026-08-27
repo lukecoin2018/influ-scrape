@@ -58,8 +58,12 @@ export interface ImportResult {
  * profile is added to a previously-excluded creator.
  */
 export async function rollUpCreatorImportStatus(creatorId: string): Promise<ImportStatus> {
+  // Reads across every population rather than just social_profiles. A creator
+  // may have profiles in either table, and the roll-up has to see all of them
+  // to decide correctly. Going through the union view means adding a third
+  // population later does not require touching this function.
   const { data: profiles, error } = await supabase
-    .from('social_profiles')
+    .from('v_social_profiles_all')
     .select('import_status')
     .eq('creator_id', creatorId);
 
@@ -72,13 +76,16 @@ export async function rollUpCreatorImportStatus(creatorId: string): Promise<Impo
     (profiles || []).map(p => p.import_status as ImportStatus)
   );
 
-  const { error: updateError } = await supabase
-    .from('creators')
-    .update({ import_status: rolledUp })
-    .eq('id', creatorId);
+  // The creator row lives in whichever table its population dictates. Update
+  // both by id: exactly one will match, and neither needs this function to
+  // know which. That keeps it population-agnostic.
+  const [main, archive] = await Promise.all([
+    supabase.from('creators').update({ import_status: rolledUp }).eq('id', creatorId),
+    supabase.from('creators_archive').update({ import_status: rolledUp }).eq('id', creatorId),
+  ]);
 
-  if (updateError) {
-    console.error(`Failed to roll up import_status for ${creatorId}:`, updateError.message);
+  if (main.error && archive.error) {
+    console.error(`Failed to roll up import_status for ${creatorId}:`, main.error.message);
   }
 
   return rolledUp;
@@ -102,27 +109,39 @@ export async function saveDiscoveredCreators(
         continue;
       }
 
-      // 1. Check if social profile already exists
+      // Where this creator belongs. Decided BEFORE anything is written, so an
+      // out-of-range creator is never inserted into the main tables and then
+      // moved — the archive is their first and only destination.
+      const targetStatus: ImportStatus = creator.importStatus ?? 'active';
+      const archived = targetStatus !== 'active';
+      const creatorTable = archived ? 'creators_archive' : 'creators';
+      const archiveReason = targetStatus === 'out_of_range_high' ? 'above_max' : 'below_min';
+
+      // 1. Check if the profile already exists in ANY population. Searching
+      // only social_profiles would re-create a creator that is sitting in the
+      // archive, duplicating them across both tables.
       const { data: existingProfile } = await supabase
-        .from('social_profiles')
-        .select('creator_id')
+        .from('v_social_profiles_all')
+        .select('creator_id, population')
         .eq('platform', platform)
         .eq('handle', handle)
-        .single();
+        .maybeSingle();
 
       let creatorId: string;
 
       if (existingProfile) {
         creatorId = existingProfile.creator_id;
       } else {
-        // 2. Create new creator (person) row
+        // 2. Create new creator (person) row, in the right table first time.
         const { data: newCreator, error: creatorError } = await supabase
-          .from('creators')
+          .from(creatorTable)
           .insert({
             display_name: creator.fullName || handle,
             full_name: creator.fullName || null,
             primary_platform: platform,
             status: 'active',
+            import_status: targetStatus,
+            ...(archived ? { archive_reason: archiveReason } : {}),
           })
           .select('id')
           .single();
@@ -145,8 +164,44 @@ export async function saveDiscoveredCreators(
           }
         : {});
 
-      // 4. Upsert the social profile
-      const { error: profileError } = await supabase.rpc('upsert_social_profile', {
+      // 4. Write the social profile.
+      //
+      // The archive path cannot use upsert_social_profile: that RPC has a fixed
+      // signature and writes to social_profiles by definition. Archived
+      // profiles are inserted directly, carrying their stamp columns in the
+      // same statement rather than as a follow-up UPDATE.
+      const stampedNow = new Date().toISOString();
+
+      const profileError = archived
+        ? (await supabase
+            .from('social_profiles_archive')
+            .upsert({
+              creator_id: creatorId,
+              platform,
+              handle,
+              follower_count: creator.followerCount || 0,
+              following_count: creator.followingCount ?? null,
+              posts_count: creator.postsCount ?? null,
+              engagement_rate: creator.engagementRate ?? null,
+              is_verified: creator.isVerified || false,
+              profile_pic_url: creator.profilePicUrl || null,
+              profile_url: creator.profileUrl || null,
+              bio: creator.bio || null,
+              website: creator.website || null,
+              platform_data: creator.platformData || (platform === 'instagram'
+                ? {
+                    is_business_account: creator.isBusinessAccount || false,
+                    category_name: creator.categoryName || null,
+                  }
+                : {}),
+              discovered_via_hashtags: creator.discoveredViaHashtags || [],
+              import_status: targetStatus,
+              import_status_at: stampedNow,
+              import_status_follower_count: creator.followerCount ?? null,
+              archive_reason: archiveReason,
+            }, { onConflict: 'platform,handle' })
+          ).error
+        : (await supabase.rpc('upsert_social_profile', {
         p_creator_id: creatorId,
         p_platform: platform,
         p_handle: handle,
@@ -161,7 +216,7 @@ export async function saveDiscoveredCreators(
         p_website: creator.website || null,
         p_platform_data: platformData,
         p_hashtags: creator.discoveredViaHashtags || [],
-      });
+      })).error;
 
       if (profileError) {
         console.error(`Failed to upsert social profile for ${handle}:`, profileError.message);
@@ -182,7 +237,9 @@ export async function saveDiscoveredCreators(
       // promote a previously-stamped profile back. Without that, a profile
       // stamped out_of_range_low could never return to the pipelines by
       // being re-discovered in range.
-      if (creator.importStatus !== undefined) {
+      // Archived profiles already carry their status and stamp from the insert
+      // above; only the active path needs the follow-up UPDATE.
+      if (!archived && creator.importStatus !== undefined) {
         const stamped = creator.importStatus !== 'active';
 
         const { error: statusError } = await supabase

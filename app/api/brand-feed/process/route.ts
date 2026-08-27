@@ -190,7 +190,16 @@ interface ResolvedCreator {
 
 /**
  * handle -> creator id and current follower count, for handles that already
- * have an Instagram profile.
+ * have an Instagram profile in ANY population.
+ *
+ * Reads v_social_profiles_all, not social_profiles. Out-of-range creators live
+ * in social_profiles_archive; looking them up in social_profiles alone would
+ * mean a re-scrape silently stopped re-recording their edges — losing exactly
+ * the celebrity and mega-creator intelligence the archive exists to keep. 1,288
+ * of 2,194 edges belong to archived creators.
+ *
+ * This is deliberately the opposite choice from the pipeline queues, which read
+ * social_profiles directly because they must only ever see sellable creators.
  *
  * The follower count is read here rather than separately because it has to be
  * captured at edge-write time: partnerships.creator_follower_count records
@@ -202,12 +211,12 @@ async function resolveCreators(handles: string[]): Promise<Map<string, ResolvedC
 
   for (const batch of chunk(handles, LOOKUP_CHUNK)) {
     const { data, error } = await supabase
-      .from('social_profiles')
+      .from('v_social_profiles_all')
       .select('handle, creator_id, follower_count')
       .eq('platform', 'instagram')
       .in('handle', batch);
 
-    if (error) throw new Error(`social_profiles lookup failed: ${error.message}`);
+    if (error) throw new Error(`profile lookup failed: ${error.message}`);
     for (const row of data || []) {
       if (row.creator_id) {
         resolved.set(norm(row.handle), {
