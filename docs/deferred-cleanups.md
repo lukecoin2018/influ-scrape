@@ -255,3 +255,40 @@ one.
 But the bet should be visible rather than inferred. If the promotion path is
 still unbuilt when the floor is next reviewed, that is an argument for building
 it, not for having archived nothing.
+
+---
+
+## 8. Two `discovery_runs.status` spellings
+
+**Where:** `discovery_runs.status` holds both `'complete'` (53 rows) and
+`'completed'` (9 rows) for the same state.
+
+**Why deferred:** C5 adds a CHECK constraint to `discovery_candidates.outcome`
+but deliberately does NOT constrain `discovery_runs.status`, because a CHECK
+would either reject the 9 legacy rows or have to enshrine the typo. The C5
+migration is meant to touch no existing row.
+
+**Trigger:** normalising is a one-line UPDATE plus a CHECK, but it is a write to
+historical rows and belongs in its own change with its own verification. Do it
+when something actually reads `status` and has to handle both spellings —
+nothing does today.
+
+---
+
+## 9. Modules that unit tests need must not import `./supabase`
+
+**Where:** the pattern, not a single file. Bit twice: `lib/profileImport.ts`
+(fixed by splitting `profileImportCore.ts` in C3b) and `lib/discoveryRun.ts`
+(fixed by splitting `discoveryCache.ts` in C5).
+
+**Why it happens:** `lib/supabase.ts` calls `createClient` at module scope with
+non-null assertions, so importing anything that transitively reaches it throws
+`supabaseUrl is required` without credentials. A unit test then cannot load the
+module at all, whatever it was trying to test.
+
+**The rule:** pure logic worth testing goes in a module that imports no client.
+The database access goes in a thin sibling that re-exports it.
+
+**Trigger:** if this bites a third time, make `lib/supabase.ts` lazy — export a
+getter that constructs on first use rather than at import — which would remove
+the constraint entirely instead of routing around it each time.
