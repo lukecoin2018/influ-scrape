@@ -32,10 +32,30 @@ export interface RunnerOptions<TItem, TResult> {
    * Processes one item. Throwing marks it failed and the run continues.
    * The signal aborts when stop() is called, so an in-flight request can be
    * cut mid-item instead of running to completion.
+   *
+   * `report` publishes sub-item progress. The runner's own counters are
+   * per-item, which is right when an item is one round trip — but a Discovery
+   * hashtag is a hashtag scrape plus up to eighteen profile batches, and would
+   * otherwise sit on one un-moving tick for minutes. Callers written before
+   * this parameter existed ignore it, since JavaScript discards extra
+   * arguments.
    */
-  processItem: (item: TItem, index: number, signal: AbortSignal) => Promise<TResult>;
+  processItem: (
+    item: TItem,
+    index: number,
+    signal: AbortSignal,
+    report: (message: string) => void,
+  ) => Promise<TResult>;
   /** Label for progress display and error rows. */
   labelFor: (item: TItem) => string;
+  /**
+   * Observes what `report` publishes, for callers that want the signal for
+   * something other than display — logging, or a test.
+   *
+   * Display needs no wiring: `report` already routes to onMessage, which the
+   * React wrapper maps onto the message it renders.
+   */
+  onItemProgress?: (item: TItem, message: string) => void;
 }
 
 export interface RunnerEvents<TResult> {
@@ -117,7 +137,7 @@ export function createChunkedRunner<TItem, TResult>(
     cancelled = false;
 
     controller = new AbortController();
-    const { chunkSize, delayMs, processItem, labelFor } = getOptions();
+    const { chunkSize, delayMs, processItem, labelFor, onItemProgress } = getOptions();
 
     try {
       events.onStatus('running');
@@ -149,8 +169,16 @@ export function createChunkedRunner<TItem, TResult>(
           events.onLabel(label);
           events.onMessage(`Processing ${label} (${counts.done + 1} of ${counts.total})…`);
 
+          // Display-only: touches neither the counters nor onResult/onError,
+          // so the succeeded === results.length invariant holds however many
+          // times an item calls it.
+          const report = (message: string) => {
+            events.onMessage(message);
+            onItemProgress?.(item, message);
+          };
+
           try {
-            const result = await processItem(item, counts.done, controller.signal);
+            const result = await processItem(item, counts.done, controller.signal, report);
             counts.succeeded++;
             counts.done++;
             events.onResult(result);
