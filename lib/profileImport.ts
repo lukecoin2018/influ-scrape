@@ -12,8 +12,11 @@ import {
 
 export {
   SAMPLES_PER_DIRECTION,
+  UNKNOWN_SIZE_SAMPLE_CAP,
   EMPTY_IMPORT_OUTCOME,
   type ImportOutcome,
+  type ImportPolicy,
+  type CacheOnlyEntry,
 } from './profileImportCore';
 
 /**

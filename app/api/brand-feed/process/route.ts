@@ -402,6 +402,7 @@ export async function POST(request: NextRequest) {
       importedOutOfRange: importResult.outOfRangeHigh + importResult.outOfRangeLow,
       importedUnknownSize: importResult.unknownSize,
       outOfRangeSamples: importResult.outOfRangeSamples,
+      unknownSizeSamples: importResult.unknownSizeSamples,
       creatorsImported: importResult.saved,
       creatorsFailed: importResult.failed,
       importErrors: importResult.errors,

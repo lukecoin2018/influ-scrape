@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runProfileImport } from './profileImportCore.ts';
+import { runProfileImport, UNKNOWN_SIZE_SAMPLE_CAP } from './profileImportCore.ts';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from './followerRange.ts';
 import type { ImportableCreator, ImportResult } from './creatorImport.ts';
 
@@ -291,4 +291,105 @@ test('TikTok profiles route through the TikTok mapper', async () => {
   assert.equal(c.handle, 'creatorone', 'handle lowercased by the mapper');
   assert.equal(c.followerCount, 120_000);
   assert.equal(c.importStatus, 'active');
+});
+
+// ── G2: brand-feed omits `policy` and is unaffected by C3c ────────────────────
+
+test('G2: omitting policy imports everything — brand-feed is unchanged by C3c', async () => {
+  const save = saveSpy();
+  // One of each status, the mix brand-feed actually sees.
+  const scrapeBatch = async () => [
+    igProfile('inband', 100_000),
+    igProfile('tiny', 800),        // below min AND below the near-miss floor
+    igProfile('mega', 900_000),
+    igProfile('unmeasured', 0),
+  ];
+
+  const out = await runProfileImport(['a', 'b', 'c', 'd'], {
+    range: BAND,
+    platform: 'instagram',
+    discoveredViaHashtags: ['brand_feed'],
+    scrapeBatch,
+    saveCreators: save.fn,
+    // No `policy` — exactly how app/api/brand-feed/process/route.ts calls it.
+  });
+
+  // Counters identical to C3b.
+  assert.equal(out.inRange, 1);
+  assert.equal(out.outOfRangeLow, 1);
+  assert.equal(out.outOfRangeHigh, 1);
+  assert.equal(out.unknownSize, 1);
+
+  // Every profile imported, including the 800-follower one that Discovery
+  // would cache. Brand-feed's below-min creators are qualified by the brand's
+  // own selection, so the floor must not reach them.
+  assert.equal(out.cacheOnly.length, 0, 'brand-feed caches nothing');
+  assert.equal(out.saved, 4, 'all four written, none diverted');
+  assert.deepEqual(
+    save.calls[0].creators.map(c => c.importStatus).sort(),
+    ['active', 'out_of_range_high', 'out_of_range_low', 'unknown_size'],
+  );
+});
+
+test('G2: omitting policy leaves the samples as C3b produced them', async () => {
+  const save = saveSpy();
+  const scrapeBatch = async (batch: string[]) =>
+    batch.map((h, i) => igProfile(h, i % 2 === 0 ? 800 : 900_000));
+
+  const out = await runProfileImport(handles(40), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['brand_feed'],
+    scrapeBatch, saveCreators: save.fn,
+  });
+
+  const low = out.outOfRangeSamples.filter(s => s.status === 'out_of_range_low');
+  const high = out.outOfRangeSamples.filter(s => s.status === 'out_of_range_high');
+  assert.equal(low.length, 12);
+  assert.equal(high.length, 12);
+  assert.equal(out.unknownSizeSamples.length, 0);
+});
+
+// ── G2 / E2: the unknown_size bucket is independent ───────────────────────────
+
+test('G2: unknown_size samples do NOT consume high/low slots', async () => {
+  const save = saveSpy();
+  // 60 unmeasured handles first, then 12 of each measured direction. Under the
+  // shared-bucket behaviour the unmeasured ones would fill the cap and the
+  // below-min samples — the informative ones — would never be recorded.
+  const scrapeBatch = async (batch: string[]) => batch.map(h => {
+    const n = Number(h.replace('h', ''));
+    if (n < 60) return igProfile(h, 0);
+    if (n < 72) return igProfile(h, 800);
+    return igProfile(h, 900_000);
+  });
+
+  const out = await runProfileImport(handles(84), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch, saveCreators: save.fn,
+  });
+
+  assert.equal(out.unknownSize, 60);
+  assert.equal(out.unknownSizeSamples.length, 12, 'own cap, not 60');
+
+  const low = out.outOfRangeSamples.filter(s => s.status === 'out_of_range_low');
+  const high = out.outOfRangeSamples.filter(s => s.status === 'out_of_range_high');
+  assert.equal(low.length, 12, 'below-min samples survive the flood of unmeasured ones');
+  assert.equal(high.length, 12);
+
+  assert.ok(
+    out.outOfRangeSamples.every(s => s.status !== 'unknown_size'),
+    'unknown_size never appears in the out-of-range bucket',
+  );
+});
+
+test('G2: each bucket caps independently at its own constant', async () => {
+  const save = saveSpy();
+  const scrapeBatch = async (batch: string[]) => batch.map(h => igProfile(h, 0));
+
+  const out = await runProfileImport(handles(100), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch, saveCreators: save.fn,
+  });
+
+  assert.equal(out.unknownSizeSamples.length, UNKNOWN_SIZE_SAMPLE_CAP);
+  assert.equal(out.outOfRangeSamples.length, 0, 'nothing measured, so nothing to sample');
 });

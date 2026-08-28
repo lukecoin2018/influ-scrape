@@ -1,5 +1,5 @@
 import { mapProfileToCreator, mapTikTokProfile } from './apify';
-import { importStatusFor, type FollowerRange } from './followerRange';
+import { importStatusFor, type FollowerRange, type ImportStatus } from './followerRange';
 import { looseHandle as norm } from './handles';
 import type { InstagramProfile } from './types';
 
@@ -18,8 +18,45 @@ import type { InstagramProfile } from './types';
 
 import type { ImportableCreator, ImportResult } from './creatorImport';
 
-/** Out-of-range examples surfaced per direction. */
+/** Out-of-range examples surfaced per direction — high and low, separately. */
 export const SAMPLES_PER_DIRECTION = 12;
+
+/**
+ * Unmeasured examples surfaced per run.
+ *
+ * Its own cap rather than a third share of SAMPLES_PER_DIRECTION. On a clean
+ * pool unmeasured handles are rare and sharing costs nothing, but hashtag and
+ * keyword discovery hits private and deleted accounts constantly — and those
+ * would crowd out the below-min samples, which are the ones worth eyeballing
+ * for promotion.
+ */
+export const UNKNOWN_SIZE_SAMPLE_CAP = 12;
+
+export type ImportDecision = 'import' | 'cache_only';
+
+/**
+ * Decides what happens to a scraped profile once its status is known.
+ *
+ * 'import' writes a creator record, routed by import_status. 'cache_only'
+ * writes nothing but returns the handle in `cacheOnly`, for callers keeping a
+ * reject cache — enough never to re-scrape the handle, without manufacturing a
+ * creator record for someone who is not one.
+ *
+ * Defaults to always importing, which is what brand-feed has always done: a
+ * handle a brand chose to feature is qualified by that selection even when it
+ * sits outside the band.
+ */
+export type ImportPolicy = (
+  profile: MappedProfile,
+  status: ImportStatus
+) => ImportDecision;
+
+/** Exactly what the reject cache needs to skip a handle next time. Nothing more. */
+export interface CacheOnlyEntry {
+  handle: string;
+  platform: string;
+  followerCount: number;
+}
 
 export interface ImportOutcome {
   attempted: number;
@@ -30,7 +67,11 @@ export interface ImportOutcome {
   outOfRangeLow: number;
   /** Followers not measured — a failed or private scrape, not a small account. */
   unknownSize: number;
+  /** High and low only. Unmeasured handles have their own bucket below. */
   outOfRangeSamples: { handle: string; followerCount: number; status: string }[];
+  unknownSizeSamples: { handle: string; followerCount: number }[];
+  /** Observed but deliberately not imported, per the policy. */
+  cacheOnly: CacheOnlyEntry[];
   errors: string[];
   /** True when a batch was skipped because the signal aborted. */
   cancelled: boolean;
@@ -61,6 +102,11 @@ export interface ProfileImportCoreOptions {
   signal?: AbortSignal;
   /** Called after each batch with handles processed so far and the total. */
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Routes each scraped profile. Omit for the previous behaviour — import
+   * everything — which is what brand-feed relies on.
+   */
+  policy?: ImportPolicy;
   /**
    * Seam over the Apify round trip: start a run, wait for it, read the dataset.
    *
@@ -103,7 +149,8 @@ export interface MappedProfile {
 
 export const EMPTY_IMPORT_OUTCOME: ImportOutcome = {
   attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
-  unknownSize: 0, outOfRangeSamples: [], errors: [], cancelled: false,
+  unknownSize: 0, outOfRangeSamples: [], unknownSizeSamples: [], cacheOnly: [],
+  errors: [], cancelled: false,
 };
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -126,11 +173,14 @@ export async function runProfileImport(
     onProgress,
     scrapeBatch,
     saveCreators,
+    policy = () => 'import',
   } = options;
 
   if (handles.length === 0) return { ...EMPTY_IMPORT_OUTCOME };
 
   const outOfRangeSamples: { handle: string; followerCount: number; status: string }[] = [];
+  const unknownSizeSamples: { handle: string; followerCount: number }[] = [];
+  const cacheOnly: CacheOnlyEntry[] = [];
   const errors: string[] = [];
   let attempted = 0;
   let saved = 0;
@@ -186,13 +236,26 @@ export async function runProfileImport(
       // Cap per direction, not overall: a shared cap would let a brand tagging
       // a dozen mega-accounts crowd the small ones out of the sample entirely,
       // and the below-min accounts are the ones worth eyeballing for promotion.
-      if (importStatus !== 'active') {
+      // Unmeasured handles get their own bucket for the same reason one step
+      // further out — on a rough pool they would swamp both directions.
+      if (importStatus === 'unknown_size') {
+        if (unknownSizeSamples.length < UNKNOWN_SIZE_SAMPLE_CAP) {
+          unknownSizeSamples.push({ handle, followerCount: mapped.followerCount });
+        }
+      } else if (importStatus !== 'active') {
         const sameDirection = outOfRangeSamples.filter(s => s.status === importStatus).length;
         if (sameDirection < SAMPLES_PER_DIRECTION) {
           outOfRangeSamples.push({
             handle, followerCount: mapped.followerCount, status: importStatus,
           });
         }
+      }
+
+      // Routing. A cache-only handle is still counted and still sampled above —
+      // it was observed — but no creator record is written for it.
+      if (policy(mapped, importStatus) === 'cache_only') {
+        cacheOnly.push({ handle, platform, followerCount: mapped.followerCount });
+        continue;
       }
 
       creators.push({
@@ -234,6 +297,8 @@ export async function runProfileImport(
     outOfRangeLow,
     unknownSize,
     outOfRangeSamples,
+    unknownSizeSamples,
+    cacheOnly,
     errors: errors.slice(0, 5),
     cancelled,
   };
