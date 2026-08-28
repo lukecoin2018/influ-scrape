@@ -255,7 +255,6 @@ one.
 But the bet should be visible rather than inferred. If the promotion path is
 still unbuilt when the floor is next reviewed, that is an argument for building
 it, not for having archived nothing.
-
 ---
 
 ## 8. Two `discovery_runs.status` spellings
@@ -369,3 +368,24 @@ avatars.
 scraper's $0.0026, so `estimateDiscoveryCost` understates TikTok runs by
 roughly 2x. `PROFILE_RESULT_USD` is a single constant with no platform
 dimension.
+
+---
+
+## 13. Sponsorship mode still runs the old client pipeline
+
+**Where:** `app/page.tsx` — `startLegacyDiscovery`, reached only when
+`mode === 'sponsorship'`.
+
+**What it misses:** everything the conversion added. No entity filter, no reject
+cache, no follower-range stamping (it still discards out-of-range creators after
+paying to scrape them), no Stop, no run record until completion, and no
+candidate log — so R3's funnel is blank for sponsorship runs.
+
+**Why deferred:** converting it needs the brand-extraction work that was
+explicitly out of scope — `detectBrandsInPost` and its normalizer problem, and
+the brand profile scrape at the end of the legacy path. Half-migrating it would
+have been worse than leaving it whole.
+
+**Trigger:** the brand-extraction work. Until then the two paths coexist, which
+is why `PipelineStatus` and the four-stage `ProgressPanel` are still alive
+(item 2) — sponsorship is their only remaining consumer.

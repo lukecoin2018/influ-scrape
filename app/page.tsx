@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import SetupPanel from '@/components/SetupPanel';
 import ProgressPanel from '@/components/ProgressPanel';
 import ResultsTable from '@/components/ResultsTable';
@@ -8,6 +8,8 @@ import BrandsTable from '@/components/BrandsTable';
 import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, DetectedBrand, Partnership, SponsorshipStats } from '@/lib/types';
 import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from '@/lib/brandDetection';
 import { mapTikTokProfile } from '@/lib/apify';
+import { useChunkedRunner } from '@/lib/useChunkedRunner';
+import DiscoveryFunnel, { type HashtagResult } from '@/components/DiscoveryFunnel';
 
 type Platform = 'instagram' | 'tiktok';
 
@@ -30,6 +32,61 @@ function slimCreator(creator: DiscoveredCreator) {
       is_business_account: creator.isBusinessAccount || false,
       category_name: creator.categoryName || null,
     },
+  };
+}
+
+/**
+ * One row of /api/database/get-creators, which reads v_creator_summary.
+ *
+ * That view is per-CREATOR with platform-prefixed columns, while ResultsTable
+ * renders a per-PROFILE shape. Without this mapping the table renders blank
+ * rows, and worse, it calls .toLocaleString() on counts the view does not carry
+ * at all — so every numeric field has to resolve to a number, not undefined.
+ */
+interface CreatorSummaryRow {
+  name?: string | null;
+  total_followers?: number | null;
+  instagram_handle?: string | null;
+  instagram_followers?: number | null;
+  instagram_engagement?: number | null;
+  instagram_verified?: boolean | null;
+  instagram_pic?: string | null;
+  instagram_bio?: string | null;
+  instagram_data?: Record<string, unknown> | null;
+  tiktok_handle?: string | null;
+  tiktok_followers?: number | null;
+  tiktok_engagement?: number | null;
+  tiktok_verified?: boolean | null;
+  tiktok_pic?: string | null;
+  tiktok_bio?: string | null;
+  tiktok_data?: Record<string, unknown> | null;
+}
+
+function summaryRowToCreator(row: CreatorSummaryRow, platform: Platform): DiscoveredCreator {
+  const isTikTok = platform === 'tiktok';
+  const handle = (isTikTok ? row.tiktok_handle : row.instagram_handle) || '';
+  const data = (isTikTok ? row.tiktok_data : row.instagram_data) || {};
+
+  return {
+    handle,
+    fullName: row.name || '',
+    bio: (isTikTok ? row.tiktok_bio : row.instagram_bio) || '',
+    followerCount:
+      (isTikTok ? row.tiktok_followers : row.instagram_followers) ?? row.total_followers ?? 0,
+    // The view aggregates per creator and carries neither of these. Zero rather
+    // than undefined because ResultsTable formats them unconditionally.
+    followingCount: 0,
+    postsCount: 0,
+    engagementRate: (isTikTok ? row.tiktok_engagement : row.instagram_engagement) ?? null,
+    isVerified: Boolean(isTikTok ? row.tiktok_verified : row.instagram_verified),
+    profileUrl: handle
+      ? `https://${isTikTok ? 'tiktok.com/@' : 'instagram.com/'}${handle}`
+      : '',
+    profilePicUrl: (isTikTok ? row.tiktok_pic : row.instagram_pic) || '',
+    website: '',
+    isBusinessAccount: Boolean((data as Record<string, unknown>).is_business_account),
+    categoryName: String((data as Record<string, unknown>).category_name ?? ''),
+    latestPosts: [],
   };
 }
 
@@ -57,7 +114,187 @@ export default function Home() {
     partnershipsLogged: 0,
   });
 
+  // ── Niche mode: the converted path ──────────────────────────────────────
+  //
+  // One item per hashtag, each a call to /api/discover/process, which does both
+  // scrape phases server-side. Sponsorship mode still runs the client pipeline
+  // below; converting it needs the brand-extraction work that is out of scope
+  // here, so the two coexist rather than one being half-migrated.
+  const [runId, setRunId] = useState<string | null>(null);
+  // The runner's results live in React state, which is stale inside the
+  // closure that runs the moment start() resolves. Refs give the finish
+  // handler the settled values rather than the ones from its render.
+  const runnerResultsRef = useRef<HashtagResult[]>([]);
+  const runnerStoppedRef = useRef(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+
+  const processHashtag = useCallback(
+    async (
+      item: { hashtag: string; runId: string; config: DiscoveryConfig; platform: Platform },
+      _index: number,
+      signal: AbortSignal,
+      report: (message: string) => void,
+    ): Promise<HashtagResult> => {
+      report(`#${item.hashtag} — scraping posts…`);
+
+      const res = await fetch('/api/discover/process', {
+        method: 'POST',
+        // Stop aborts this, which frees the loop and lets the route skip the
+        // profile batches it has not started yet.
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: item.runId,
+          hashtag: item.hashtag,
+          platform: item.platform,
+          resultsPerHashtag: item.config.resultsPerHashtag,
+          minFollowers: item.config.minFollowers,
+          maxFollowers: item.config.maxFollowers,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data as HashtagResult;
+    },
+    [],
+  );
+
+  const runner = useChunkedRunner<
+    { hashtag: string; runId: string; config: DiscoveryConfig; platform: Platform },
+    HashtagResult
+  >({
+    // One hashtag at a time: each is already several Apify runs, so there is
+    // nothing to gain from a wider chunk and a pause between them is polite.
+    chunkSize: 1,
+    delayMs: 1000,
+    processItem: processHashtag,
+    labelFor: item => `#${item.hashtag}`,
+  });
+
+  useEffect(() => {
+    runnerResultsRef.current = runner.results;
+  }, [runner.results]);
+
+  useEffect(() => {
+    if (runner.status === 'stopped') runnerStoppedRef.current = true;
+  }, [runner.status]);
+
+  const startNicheDiscovery = async (config: DiscoveryConfig) => {
+    if (isStarting || runner.isRunning) return;
+    setIsStarting(true);
+    setRunError(null);
+    setCreators([]);
+    runnerResultsRef.current = [];
+    runnerStoppedRef.current = false;
+    runner.reset();
+    setActiveTab('progress');
+
+    try {
+      const res = await fetch('/api/discover/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform,
+          mode: config.mode,
+          hashtags: config.hashtags,
+          resultsPerHashtag: config.resultsPerHashtag,
+          minFollowers: config.minFollowers,
+          maxFollowers: config.maxFollowers,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      setRunId(data.runId);
+      await runner.start(
+        data.items.map((item: { hashtag: string }) => ({
+          hashtag: item.hashtag,
+          runId: data.runId,
+          config,
+          platform,
+        })),
+      );
+
+      // start() resolves when the loop ends, however it ended, so this runs for
+      // a stopped run too. Closing the row is the client's job because a run
+      // spans many per-hashtag calls and none of them knows it was the last.
+      await finishRun(data.runId, config);
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to start discovery');
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  /**
+   * Closes the run row and loads the creators it imported.
+   *
+   * The route responses carry counts and samples, not creator rows — returning
+   * 900 profiles per hashtag mid-run would be a heavy payload for a progress
+   * display. The full table is read from the database once, at the end.
+   */
+  const finishRun = async (id: string, config: DiscoveryConfig) => {
+    const rows = runnerResultsRef.current;
+    const totals = {
+      totalPostsFound: rows.reduce((n, r) => n + r.postsFound, 0),
+      uniqueHandlesFound: rows.reduce((n, r) => n + r.candidatesFound, 0),
+      profilesScraped: rows.reduce((n, r) => n + (r.imported?.attempted ?? 0), 0),
+      creatorsInRange: rows.reduce((n, r) => n + (r.imported?.inRange ?? 0), 0),
+      newCreatorsAdded: rows.reduce((n, r) => n + (r.imported?.saved ?? 0), 0),
+      existingCreatorsUpdated: rows.reduce((n, r) => n + r.alreadyKnown, 0),
+    };
+
+    try {
+      await fetch('/api/discover/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: id,
+          status: runnerStoppedRef.current ? 'cancelled' : 'complete',
+          ...totals,
+        }),
+      });
+    } catch (err) {
+      console.error('Failed to close discovery run:', err);
+    }
+
+    if (totals.creatorsInRange === 0) return;
+
+    try {
+      const params = new URLSearchParams({
+        platform,
+        minFollowers: String(config.minFollowers),
+        maxFollowers: String(config.maxFollowers),
+        limit: '500',
+      });
+      const res = await fetch(`/api/database/get-creators?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        const rows: CreatorSummaryRow[] = data.creators || [];
+        setCreators(
+          rows.map(row => summaryRowToCreator(row, platform)).filter(c => c.handle),
+        );
+      }
+    } catch (err) {
+      console.error('Failed to load imported creators:', err);
+    }
+
+    setActiveTab('results');
+  };
+
   const startDiscovery = async (config: DiscoveryConfig) => {
+    setDiscoveryConfig(config);
+    if (config.mode !== 'sponsorship') {
+      await startNicheDiscovery(config);
+      return;
+    }
+    await startLegacyDiscovery(config);
+  };
+
+  const startLegacyDiscovery = async (config: DiscoveryConfig) => {
     setDiscoveryConfig(config);
     setActiveTab('progress');
     setCreators([]);
@@ -528,20 +765,106 @@ const brandRunId = brandData.runId;
               </div>
               {platform === 'tiktok' && (
                 <p className="text-xs text-slate-500 mt-2">
-                  Note: TikTok sponsorship discovery is not available. Niche discovery only.
+                  Niche discovery runs on both platforms. Sponsorship discovery is Instagram only.
                 </p>
               )}
             </div>
 
             <SetupPanel
               onStartDiscovery={startDiscovery}
-              isRunning={status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error'}
+              isRunning={
+                isStarting || runner.isRunning ||
+                (status.stage !== 'idle' && status.stage !== 'complete' && status.stage !== 'error')
+              }
             />
           </div>
         )}
 
-        {activeTab === 'progress' && (
-          <ProgressPanel status={status} mode={discoveryConfig?.mode || 'niche'} sponsorshipStats={sponsorshipStats} />
+        {activeTab === 'progress' && discoveryConfig?.mode === 'sponsorship' && (
+          <ProgressPanel status={status} mode="sponsorship" sponsorshipStats={sponsorshipStats} />
+        )}
+
+        {activeTab === 'progress' && discoveryConfig?.mode !== 'sponsorship' && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h2 className="text-xl font-bold text-slate-900">
+                    {runner.status === 'idle' ? 'Ready' :
+                     runner.status === 'running' ? 'Discovery running' :
+                     runner.status === 'stopped' ? 'Stopped' : 'Complete'}
+                  </h2>
+                  <p className="text-sm text-slate-600 mt-1 truncate">
+                    {runner.message || 'Waiting to start…'}
+                  </p>
+                  {runner.currentLabel && (
+                    <p className="text-xs text-slate-400 mt-1">{runner.currentLabel}</p>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => runner.stop()}
+                  disabled={!runner.isRunning}
+                  className="shrink-0 px-5 py-2 rounded-lg font-medium bg-red-600 text-white
+                             disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed
+                             hover:bg-red-700 transition-colors"
+                >
+                  Stop
+                </button>
+              </div>
+
+              <div className="mt-4">
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-violet-600 transition-all duration-300"
+                    style={{
+                      width: runner.progress.total
+                        ? `${(runner.progress.done / runner.progress.total) * 100}%`
+                        : '0%',
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-slate-500 mt-2">
+                  <span>
+                    {runner.progress.done} of {runner.progress.total} hashtags
+                    {runner.progress.failed > 0 && ` · ${runner.progress.failed} failed`}
+                  </span>
+                  {runId && <span className="font-mono">run {runId.slice(0, 8)}</span>}
+                </div>
+              </div>
+
+              {/* Stopping cannot recall an Apify run already in flight; it
+                  prevents the ones that have not started. Saying so avoids the
+                  impression that Stop is instant and free. */}
+              {runner.status === 'stopped' && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-4">
+                  Stopped. The scrape already in flight finished and was billed; nothing further
+                  was started. Everything measured before the stop was kept.
+                </p>
+              )}
+
+              {runError && (
+                <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-4">
+                  {runError}
+                </p>
+              )}
+
+              {runner.errors.length > 0 && (
+                <div className="mt-4 text-sm">
+                  <p className="font-medium text-slate-700 mb-1">Failed hashtags</p>
+                  <ul className="space-y-1">
+                    {runner.errors.map((e, i) => (
+                      <li key={i} className="text-red-600">
+                        <span className="font-medium">{e.item}</span> — {e.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <DiscoveryFunnel results={runner.results} />
+          </div>
         )}
 
         {activeTab === 'results' && (
