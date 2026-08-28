@@ -51,6 +51,10 @@ export async function POST(request: NextRequest) {
         : await fetchAllRows(() => supabase
             .from('social_profiles')
             .select('id, handle, enrichment_data')
+            // Only the unfiltered sweep takes the import_status gate. An
+            // explicit handle list above is an operator naming a profile and
+            // still reaches it whatever its status.
+            .eq('import_status', 'active')
             .order('id', { ascending: true }));
     } catch (err: any) {
       return NextResponse.json({ error: err.message }, { status: 500 });

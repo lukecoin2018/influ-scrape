@@ -239,6 +239,8 @@ interface ImportOutcome {
   inRange: number;
   outOfRangeHigh: number;
   outOfRangeLow: number;
+  /** Followers not measured — a failed or private scrape, not a small account. */
+  unknownSize: number;
   outOfRangeSamples: { handle: string; followerCount: number; status: string }[];
   errors: string[];
 }
@@ -258,7 +260,7 @@ async function importNewCreators(
 ): Promise<ImportOutcome> {
   const empty: ImportOutcome = {
     attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
-    outOfRangeSamples: [], errors: [],
+    unknownSize: 0, outOfRangeSamples: [], errors: [],
   };
   if (handles.length === 0) return empty;
 
@@ -274,6 +276,7 @@ async function importNewCreators(
   let inRange = 0;
   let outOfRangeHigh = 0;
   let outOfRangeLow = 0;
+  let unknownSize = 0;
 
   for (const profile of profiles) {
     const mapped = mapProfileToCreator(profile);
@@ -283,6 +286,7 @@ async function importNewCreators(
     const importStatus = importStatusFor(mapped.followerCount, range);
     if (importStatus === 'out_of_range_high') outOfRangeHigh++;
     else if (importStatus === 'out_of_range_low') outOfRangeLow++;
+    else if (importStatus === 'unknown_size') unknownSize++;
     else inRange++;
 
     // Cap per direction, not overall: a shared cap would let a brand tagging
@@ -325,6 +329,7 @@ async function importNewCreators(
     inRange,
     outOfRangeHigh,
     outOfRangeLow,
+    unknownSize,
     outOfRangeSamples,
     errors: result.errors.slice(0, 5),
   };
@@ -467,7 +472,7 @@ export async function POST(request: NextRequest) {
     const importResult = abortedMidItem
       ? {
           attempted: 0, saved: 0, failed: 0,
-          inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
+          inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0, unknownSize: 0,
           outOfRangeSamples: [], errors: ['cancelled before profile scrape'],
         }
       : await importNewCreators(newHandles, range);
@@ -560,6 +565,7 @@ export async function POST(request: NextRequest) {
       importedOutOfRangeHigh: importResult.outOfRangeHigh,
       importedOutOfRangeLow: importResult.outOfRangeLow,
       importedOutOfRange: importResult.outOfRangeHigh + importResult.outOfRangeLow,
+      importedUnknownSize: importResult.unknownSize,
       outOfRangeSamples: importResult.outOfRangeSamples,
       creatorsImported: importResult.saved,
       creatorsFailed: importResult.failed,

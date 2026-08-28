@@ -113,7 +113,14 @@ export async function saveDiscoveredCreators(
       // out-of-range creator is never inserted into the main tables and then
       // moved — the archive is their first and only destination.
       const targetStatus: ImportStatus = creator.importStatus ?? 'active';
-      const archived = targetStatus !== 'active';
+
+      // Only a MEASURED out-of-range verdict archives. 'unknown_size' means the
+      // follower count has not been read yet, so it stays in the live tables:
+      // nothing in the app reads the archive, and enrichment — which re-scrapes
+      // follower_count from social_profiles — is the path that resolves it.
+      // Archiving an unmeasured handle would make it permanently unmeasurable.
+      const archived = targetStatus === 'out_of_range_high'
+        || targetStatus === 'out_of_range_low';
       const creatorTable = archived ? 'creators_archive' : 'creators';
       const archiveReason = targetStatus === 'out_of_range_high' ? 'above_max' : 'below_min';
 
@@ -237,6 +244,11 @@ export async function saveDiscoveredCreators(
       // promote a previously-stamped profile back. Without that, a profile
       // stamped out_of_range_low could never return to the pipelines by
       // being re-discovered in range.
+      //
+      // 'unknown_size' also lands here rather than on the archive path above,
+      // so it is stamped in place. Promotion out of it is a plain UPDATE on
+      // this same row — no cross-table move, and therefore none of the
+      // duplication hazard that the archive promotion path carries.
       // Archived profiles already carry their status and stamp from the insert
       // above; only the active path needs the follow-up UPDATE.
       if (!archived && creator.importStatus !== undefined) {
