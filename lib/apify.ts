@@ -258,15 +258,20 @@ export function mapTikTokProfile(profile: any) {
   const handle = (profile.username || '').toLowerCase();
   return {
     handle,
-    fullName: profile.displayName || '',
+    // The actor emits `tagline` and `image`; `displayName` and `profileImage`
+    // do not exist in its output and always resolved to empty. Confirmed from
+    // stored data rather than a run — this same actor has fed the TikTok path
+    // since the initial commit, and of 3,458 TikTok-primary creators exactly
+    // one had a full_name, against 3,347 of 3,347 with a follower count.
+    fullName: profile.displayName || profile.tagline || '',
     bio: (profile.bio || '').slice(0, 500),
     followerCount: profile.followers?.raw || profile.followers || 0,
     followingCount: profile.following?.raw || profile.following || 0,
     postsCount: profile.videos?.raw || profile.videos || 0,
     engagementRate: null,
     isVerified: false,
-    profilePicUrl: profile.profileImage || '',
-    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
+    profilePicUrl: profile.profileImage || profile.image || '',
+    profileUrl: profile.profileUrl || profile.url || `https://tiktok.com/@${handle}`,
     website: '',
     platformData: {
       likes_count: profile['likes.raw'] || profile.likes?.raw || profile.likes_raw || profile.likes || 0,

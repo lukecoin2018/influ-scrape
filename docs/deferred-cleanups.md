@@ -330,46 +330,36 @@ accidental.
 
 ---
 
-## 12. `mapTikTokProfile` reads two field names the actor does not emit
+## 12. RESOLVED — `mapTikTokProfile` field names, except the avatars
 
-**Where:** `lib/apify.ts`, `mapTikTokProfile`.
+**Was:** `abe/tiktok-profile-scraper` emits `image` and `tagline`; the mapper
+read `profileImage` and `displayName`. Neither exists, so both silently
+resolved to empty since the initial commit.
 
-**What:** `abe/tiktok-profile-scraper` emits `image` and `tagline`; the mapper
-reads `profileImage` and `displayName`. Neither exists, so both silently
-resolve to empty.
+**Resolved** by adding fallbacks (`displayName || tagline`,
+`profileImage || image`, `profileUrl || url`). Additive and safe: the original
+fields are always undefined, so nothing that worked before changes.
 
-Confirmed from stored data rather than a run — the same actor fed the old
-client-side path since the initial commit:
+`full_name` is backfillable without re-scraping — the value is already in
+`social_profiles.platform_data->>'tagline'`. See
+docs/migrations/2026-08-29-backfill-tiktok-full-name.sql.
 
-| column | TikTok | Instagram |
-|---|---|---|
-| `follower_count > 0` | 3347 / 3347 (100%) | 97% |
-| `bio` | 3274 / 3347 (98%) | 96% |
-| `profile_pic_url` | **1 / 3347 (0%)** | 92% |
-| `creators.full_name` | **1 / 3458** | — |
+### Deliberate data loss: TikTok avatars before 2026-08-29
 
-`platform_data.tagline` holds the display name that belongs in `full_name`
-("Kiara | Duval's Finest"), so the data was fetched and then dropped.
+**`profile_pic_url` is NOT backfillable and will not be recovered.** The actor
+returned the image URL on every one of those runs and the mapper discarded it
+without storing it anywhere — unlike the display name, which survived by
+accident in `platform_data.tagline`. There is nothing on disk to recover from.
 
-**Fix:** two fallbacks, additive and safe since the current fields are always
-undefined:
+Restoring them would mean re-scraping 3,347 TikTok profiles at $0.005 each,
+roughly $17, to recover a cosmetic field for creators who may never be used.
+**That is a deliberate decision not to spend it.** Profiles scraped from
+2026-08-29 onward carry avatars; older ones will fill in only if something
+re-enriches them for an unrelated reason.
 
-    fullName:      profile.displayName  || profile.tagline || ''
-    profilePicUrl: profile.profileImage || profile.image   || ''
+If a future change makes avatars matter — a public-facing view, a client-facing
+export — this is the reason they are missing and the price of fixing it.
 
-**Not done here** because C6/C7 are scoped to the conversion and this changes a
-mapper that `app/page.tsx` also uses. Worth doing before TikTok Discovery runs
-at any volume — otherwise every imported TikTok creator arrives with no avatar
-and no name. Backfilling existing rows is separate again, and possible without
-re-scraping for `full_name` (it is in `platform_data.tagline`) but not for
-avatars.
-
-**Also note:** this actor bills $0.005 per profile against the Instagram
-scraper's $0.0026, so `estimateDiscoveryCost` understates TikTok runs by
-roughly 2x. `PROFILE_RESULT_USD` is a single constant with no platform
-dimension.
-
----
 
 ## 13. Sponsorship mode still runs the old client pipeline
 
