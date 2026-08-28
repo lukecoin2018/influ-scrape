@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import type { DiscoveryConfig, DiscoveryMode } from '@/lib/types';
+import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
+import { estimateDiscoveryCost } from '@/lib/discoveryCost';
 
 const PRESET_HASHTAGS = [
   '#beautyblogger', '#makeuptutorial', '#skincare', '#lifestyleblogger',
@@ -40,8 +42,8 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
   const [mode, setMode] = useState<DiscoveryMode>('niche');
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
-  const [minFollowers, setMinFollowers] = useState(50000);
-  const [maxFollowers, setMaxFollowers] = useState(500000);
+  const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
+  const [maxFollowers, setMaxFollowers] = useState(DEFAULT_MAX_FOLLOWERS);
   const [resultsPerHashtag, setResultsPerHashtag] = useState(200);
 
   const handleModeChange = (newMode: DiscoveryMode) => {
@@ -75,7 +77,8 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
     });
   };
 
-  const estimatedCost = hashtags.split(',').length * 0.5 + (resultsPerHashtag / 20) * 3;
+  const hashtagCount = hashtags.split(',').filter(h => h.trim()).length;
+  const cost = estimateDiscoveryCost(hashtagCount, resultsPerHashtag, mode);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
@@ -218,10 +221,19 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
           <div>
             <div className="text-sm font-medium text-blue-900">Estimated Cost</div>
             <div className="text-xs text-blue-700">
-              Hashtag scraping: ${(hashtags.split(',').length * 0.5).toFixed(2)} · Profile scraping: ${((resultsPerHashtag / 20) * 3).toFixed(2)}
+              {cost.posts.toLocaleString()} posts ${cost.hashtagUsd.toFixed(2)} ·{' '}
+              {cost.authorProfiles.toLocaleString()} creator profiles ${cost.profileUsd.toFixed(2)}
+              {cost.brandProfiles > 0 && (
+                <> · {cost.brandProfiles.toLocaleString()} brand profiles ${cost.brandUsd.toFixed(2)}</>
+              )}
             </div>
+            {cost.brandProfiles > 0 && (
+              <div className="text-xs text-blue-600 mt-1">
+                Brand profile count is an upper bound — the run de-duplicates brands, so actual spend will be lower.
+              </div>
+            )}
           </div>
-          <div className="text-2xl font-bold text-blue-600">${estimatedCost.toFixed(2)}</div>
+          <div className="text-2xl font-bold text-blue-600">${cost.totalUsd.toFixed(2)}</div>
         </div>
       </div>
 
