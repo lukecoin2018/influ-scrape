@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { recalculateCumulativeBrandFields, type StoredPostForBrandAgg } from '@/lib/brandAggregation';
+import { fetchAllRows } from '@/lib/supabasePaging';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -40,10 +41,19 @@ export async function POST(request: NextRequest) {
       profileQuery = profileQuery.in('handle', handles);
     }
 
-    const { data: profiles, error: profilesError } = await profileQuery;
-
-    if (profilesError) {
-      return NextResponse.json({ error: profilesError.message }, { status: 500 });
+    // With no handles filter this walks every profile, so it is paged rather
+    // than capped — a truncated read would silently reprocess only part of
+    // the database and report success.
+    let profiles: { id: string; handle: string; enrichment_data: any }[];
+    try {
+      profiles = handles && handles.length > 0
+        ? ((await profileQuery).data || [])
+        : await fetchAllRows(() => supabase
+            .from('social_profiles')
+            .select('id, handle, enrichment_data')
+            .order('id', { ascending: true }));
+    } catch (err: any) {
+      return NextResponse.json({ error: err.message }, { status: 500 });
     }
 
     if (!profiles || profiles.length === 0) {
@@ -59,7 +69,7 @@ export async function POST(request: NextRequest) {
       const { data: rawPosts, error: postsError } = await supabase
         .from('creator_posts')
         .select(
-          'id, social_profile_id, caption, hashtags, tagged_accounts, ' +
+          'id, social_profile_id, platform, caption, hashtags, tagged_accounts, ' +
           'is_sponsored, sponsor_signals, detected_brands, ' +
           'likes_count, comments_count, views_count, post_type, posted_at'
         )

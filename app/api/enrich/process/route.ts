@@ -128,7 +128,9 @@ function mapTikTokPost(post: any, socialProfileId: string) {
   // entirely and yield "ruffles" for an account actually called
   // "officialruffles". It is used only when detailedMentions is absent, where
   // a one-word display name is at least more often right than a truncation.
-  const taggedAccounts = Array.isArray(post.detailedMentions)
+  const hasResolvedMentions = Array.isArray(post.detailedMentions);
+
+  const taggedAccounts = hasResolvedMentions
     ? handlesFromActorList(post.detailedMentions)
     : Array.isArray(post.mentions)
       ? handlesFromActorList(post.mentions)
@@ -141,6 +143,10 @@ function mapTikTokPost(post: any, socialProfileId: string) {
     caption,
     hashtags,
     taggedAccounts,
+    // Only detailedMentions carries real usernames. When it is present the
+    // caption's @-tokens are display names, and letting the detector re-parse
+    // them would file "chester" alongside "cheetos" on the same post.
+    mentionsAreResolved: hasResolvedMentions,
     url: post.webVideoUrl || post.url || '',
     type: 'video',
   });
@@ -515,7 +521,7 @@ export async function POST(request: NextRequest) {
     // agree, and refreshes stale is_sponsored/detected_brands on older posts.
     const { data: allStoredPosts, error: allStoredPostsError } = await supabase
       .from('creator_posts')
-      .select('id, caption, hashtags, tagged_accounts, is_sponsored, sponsor_signals, detected_brands, post_type')
+      .select('id, caption, hashtags, tagged_accounts, is_sponsored, sponsor_signals, detected_brands, post_type, platform')
       .eq('social_profile_id', socialProfileId);
 
     if (allStoredPostsError) {

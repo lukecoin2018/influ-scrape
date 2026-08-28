@@ -245,6 +245,23 @@ interface HashtagPost {
   caption?: string;
   hashtags?: string[];
   taggedAccounts?: string[];   // maps to creator_posts.tagged_accounts
+  /**
+   * Set when taggedAccounts came from a scraper that resolved real usernames,
+   * rather than from parsing the caption.
+   *
+   * TikTok captions render mentions as @DisplayName, so "@Chester Cheetah"
+   * yields the fragment "chester" while the actor's detailedMentions gives the
+   * real handle "cheetos". With both sources active the post ends up carrying
+   * BOTH — the fragment beside the account it is a broken version of, which
+   * double-counts the brand and keeps regenerating the fragment on every
+   * re-detection pass.
+   *
+   * When set, caption-derived HANDLES are suppressed in favour of
+   * taggedAccounts. Hashtag and phrase signals are unaffected, and the
+   * caption-pattern SIGNALS still fire — a collab word next to a mention is
+   * evidence of sponsorship regardless of which source names the brand.
+   */
+  mentionsAreResolved?: boolean;
   url: string;
   type: string;
   likesCount?: number;
@@ -268,6 +285,7 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   const captionLower = caption.toLowerCase();
   const hashtagsLower = (post.hashtags || []).map(h => h.toLowerCase().replace(/^#/, ''));
   const taggedAccounts = Array.isArray(post.taggedAccounts) ? post.taggedAccounts : [];
+  const mentionsAreResolved = post.mentionsAreResolved === true;
   const ownerHandle = post.ownerUsername?.toLowerCase() || '';
   const captionHasMention = caption.includes('@');
 
@@ -307,24 +325,31 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   }
 
   // ── Step 4: @mention + collab-word pattern ───────────────────────────────────
+  // The signal fires either way: a collab word beside a mention is evidence of
+  // sponsorship whoever names the brand. Only the handle is withheld when the
+  // caption is not the authoritative source for it.
   const mentionCollabHandles = extractMentionCollabPatterns(caption);
   if (mentionCollabHandles.length > 0) {
-    mentionCollabHandles.forEach(h => {
-      if (h !== ownerHandle && isLikelyBrand(h)) {
-        brandHandles.add(h);
-      }
-    });
+    if (!mentionsAreResolved) {
+      mentionCollabHandles.forEach(h => {
+        if (h !== ownerHandle && isLikelyBrand(h)) {
+          brandHandles.add(h);
+        }
+      });
+    }
     detectionSignals.add('mention_collab_pattern');
   }
 
   // ── Step 5: "x @brand" pattern ───────────────────────────────────────────────
   const xPatternHandles = extractXPatternMentions(caption);
   if (xPatternHandles.length > 0) {
-    xPatternHandles.forEach(h => {
-      if (h !== ownerHandle && isLikelyBrand(h)) {
-        brandHandles.add(h);
-      }
-    });
+    if (!mentionsAreResolved) {
+      xPatternHandles.forEach(h => {
+        if (h !== ownerHandle && isLikelyBrand(h)) {
+          brandHandles.add(h);
+        }
+      });
+    }
     detectionSignals.add('x_brand_pattern');
   }
 
@@ -344,7 +369,10 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   }
 
   // ── Step 7: @mentions in caption (only for sponsored posts) ──────────────────
-  if (isSponsoredContent) {
+  // Skipped entirely when the mentions are resolved: every handle this would
+  // produce is a display-name fragment of one already contributed by Step 6,
+  // and Step 6's 'tagged_in_post' covers the confidence contribution.
+  if (isSponsoredContent && !mentionsAreResolved) {
     // Shared extractor: same character class AND trailing boundary as every
     // other mention path. The previous inline regex had no boundary check, so
     // "@Huda Beauty" in a caption was filed as the brand "huda" — the same

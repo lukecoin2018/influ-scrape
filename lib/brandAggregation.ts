@@ -12,6 +12,14 @@ export interface StoredPostForBrandAgg {
   sponsor_signals: string[] | null;
   detected_brands: string[] | null;
   post_type: string | null;
+  /**
+   * Needed to decide whether the stored tagged_accounts are resolved
+   * usernames or caption-derived text. Without it, re-detection re-parses
+   * TikTok captions and regenerates the display-name fragments the scrape
+   * replaced — so a repaired post would drift straight back on the next
+   * enrichment pass.
+   */
+  platform?: string | null;
 }
 
 export interface CumulativeBrandFields {
@@ -27,11 +35,22 @@ export interface CumulativeBrandFields {
  * ownerUsername isn't stored per-post, so owner-handle exclusion is best-effort.
  */
 function redetectFromStoredPost(post: StoredPostForBrandAgg) {
+  // TikTok tagged_accounts come from the actor's resolved detailedMentions, so
+  // the caption must not be re-parsed for handles — its @-tokens are display
+  // names. Instagram captions carry real handles (the platform autocompletes
+  // them), and mapInstagramPost folds caption mentions into tagged_accounts,
+  // so re-extraction there is consistent with how the row was written.
+  //
+  // Defaults to false when platform is absent, which preserves the previous
+  // behaviour for any caller that has not been updated.
+  const mentionsAreResolved = post.platform === 'tiktok';
+
   return detectBrandsInPost({
     ownerUsername: '',
     caption: post.caption || '',
     hashtags: post.hashtags || [],
     taggedAccounts: post.tagged_accounts || [],
+    mentionsAreResolved,
     url: '',
     type: post.post_type || 'unknown',
   });

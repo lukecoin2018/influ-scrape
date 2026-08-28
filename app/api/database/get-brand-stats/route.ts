@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/supabasePaging';
 
 export async function GET(request: NextRequest) {
   try {
@@ -17,24 +18,32 @@ export async function GET(request: NextRequest) {
       .select('*', { count: 'exact', head: true })
       .gte('first_detected_at', oneWeekAgo.toISOString());
 
-    // Get average partnerships per brand
-    const { data: brandsWithPartnerships } = await supabase
-      .from('brands')
-      .select('total_partnerships_detected')
-      .not('total_partnerships_detected', 'is', null);
+    // Both of these aggregate in JS, so the rows are genuinely needed —
+    // PostgREST rejects aggregate functions ("Use of aggregate functions is
+    // not allowed"), so avg() and a mode cannot be pushed to the server.
+    //
+    // Paged rather than capped. This is the largest unbounded read in the
+    // codebase: brands is at ~11,900 and grows with every sweep, and a plain
+    // select silently stops at 50,000 rather than erroring.
+    const [brandsWithPartnerships, categoryCounts] = await Promise.all([
+      fetchAllRows<{ total_partnerships_detected: number | null }>(() => supabase
+        .from('brands')
+        .select('total_partnerships_detected')
+        .not('total_partnerships_detected', 'is', null)
+        .order('id', { ascending: true })),
+      fetchAllRows<{ category_name: string | null }>(() => supabase
+        .from('brands')
+        .select('category_name')
+        .not('category_name', 'is', null)
+        .order('id', { ascending: true })),
+    ]);
 
-    const avgPartnerships = brandsWithPartnerships && brandsWithPartnerships.length > 0
+    const avgPartnerships = brandsWithPartnerships.length > 0
       ? brandsWithPartnerships.reduce((sum, b) => sum + (b.total_partnerships_detected || 0), 0) / brandsWithPartnerships.length
       : 0;
 
-    // Get top category
-    const { data: categoryCounts } = await supabase
-      .from('brands')
-      .select('category_name')
-      .not('category_name', 'is', null);
-
     const categoriesMap: Record<string, number> = {};
-    categoryCounts?.forEach(b => {
+    categoryCounts.forEach(b => {
       if (b.category_name) {
         categoriesMap[b.category_name] = (categoriesMap[b.category_name] || 0) + 1;
       }

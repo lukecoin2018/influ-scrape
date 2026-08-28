@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { fetchAllRows } from '@/lib/supabasePaging';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -385,14 +386,19 @@ export async function POST(request: Request) {
     // comparison, which PostgREST filters can't express directly — so pull
     // candidates (both timestamps set) and filter/sort/limit in JS. NULL
     // intelligence_updated_at is excluded — those belong to "Not yet analyzed".
-    const { data: candidates, error: candidatesError } = await supabase
+    // Column-to-column comparison, so the rows are genuinely needed. Paged
+    // rather than capped: truncation here would silently shrink the
+    // re-analysis queue rather than erroring.
+    const candidates = await fetchAllRows<Record<string, unknown>>(() => supabase
       .from('social_profiles')
       .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, enriched_at, intelligence_updated_at, intelligence_data')
       .eq('import_status', 'active')
       .not('enriched_at', 'is', null)
-      .not('intelligence_updated_at', 'is', null);
+      .not('intelligence_updated_at', 'is', null)
+      .order('id', { ascending: true }));
+    const candidatesError = null;
 
-    profiles = (candidates || [])
+    profiles = candidates
       .filter((p) => new Date(p.enriched_at as string).getTime() > new Date(p.intelligence_updated_at as string).getTime())
       .sort((a, b) => new Date(b.enriched_at as string).getTime() - new Date(a.enriched_at as string).getTime())
       .slice(0, batchSize);

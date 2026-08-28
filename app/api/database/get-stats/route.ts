@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { fetchAllRows } from '@/lib/supabasePaging';
 
 export async function GET() {
   try {
@@ -16,25 +17,30 @@ export async function GET() {
       .select('*', { count: 'exact', head: true })
       .gte('first_discovered_at', oneWeekAgo.toISOString());
 
-    // Average engagement rate
-    const { data: avgData } = await supabase
-      .from('creators')
-      .select('engagement_rate')
-      .not('engagement_rate', 'is', null);
+    // Both aggregate in JS — PostgREST rejects aggregate functions, so neither
+    // avg() nor a mode can be pushed server-side. Paged rather than capped:
+    // small today (a few hundred rows), but the same silent-truncation class
+    // as the rest, and creators grows with every sweep.
+    const [avgData, categoryData] = await Promise.all([
+      fetchAllRows<{ engagement_rate: number | null }>(() => supabase
+        .from('creators')
+        .select('engagement_rate')
+        .not('engagement_rate', 'is', null)
+        .order('id', { ascending: true })),
+      fetchAllRows<{ category_name: string | null }>(() => supabase
+        .from('creators')
+        .select('category_name')
+        .not('category_name', 'is', null)
+        .not('category_name', 'eq', '')
+        .order('id', { ascending: true })),
+    ]);
 
-    const avgEngagement = avgData && avgData.length > 0
+    const avgEngagement = avgData.length > 0
       ? avgData.reduce((sum, c) => sum + (c.engagement_rate || 0), 0) / avgData.length
       : 0;
 
-    // Most common category
-    const { data: categoryData } = await supabase
-      .from('creators')
-      .select('category_name')
-      .not('category_name', 'is', null)
-      .not('category_name', 'eq', '');
-
     const categoryCounts: { [key: string]: number } = {};
-    categoryData?.forEach((c) => {
+    categoryData.forEach((c) => {
       if (c.category_name) {
         categoryCounts[c.category_name] = (categoryCounts[c.category_name] || 0) + 1;
       }

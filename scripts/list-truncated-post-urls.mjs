@@ -35,8 +35,12 @@ const page = async (t, sel, f = '', size = 1000) => {
   return out;
 };
 
-const posts = await page('creator_posts', 'social_profile_id,post_url,caption,detected_brands,posted_at',
-  'platform=eq.tiktok&detected_brands=neq.%7B%7D');
+// detected_brands <> '{}' cannot use an index, so combining it with keyset
+// pagination makes every page a wide scan and trips the statement timeout.
+// Page on the primary key alone and filter client-side instead.
+const allPosts = await page('creator_posts', 'social_profile_id,post_url,caption,detected_brands,posted_at',
+  'platform=eq.tiktok');
+const posts = allPosts.filter(p => (p.detected_brands || []).length > 0);
 
 // A stored handle is a truncated display name when the caption wrote it
 // Capitalised and the next word is Capitalised too: "@Chester Cheetah".
@@ -58,7 +62,7 @@ for (const p of affected) {
   bands[a < 60 ? '<2mo' : a < 180 ? '2-6mo' : a < 365 ? '6-12mo' : '>12mo']++;
 }
 
-console.log(`${posts.length} TikTok posts with brand mentions`);
+console.log(`${allPosts.length} TikTok posts scanned, ${posts.length} carry brand mentions`);
 console.log(`${affected.length} carry an unrecoverable truncation and have a usable URL\n`);
 console.log('age distribution:');
 for (const [b, n] of Object.entries(bands)) console.log(`  ${b.padEnd(8)} ${String(n).padStart(5)}  ${Math.round(n / affected.length * 100)}%`);
