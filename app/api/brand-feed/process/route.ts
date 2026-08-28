@@ -2,10 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import {
   startPostScraper,
-  startProfileScraper,
   waitForRun,
   getDatasetItems,
-  mapProfileToCreator,
 } from '@/lib/apify';
 import {
   detectCollabsInBrandPost,
@@ -13,15 +11,15 @@ import {
   type BrandFeedPost,
   type BrandPostCollabs,
 } from '@/lib/collabDetection';
-import { saveDiscoveredCreators, type ImportableCreator } from '@/lib/creatorImport';
+import { loadEntityExcludedHandles } from '@/lib/entityFilter';
 import {
-  importStatusFor,
-  normaliseRange,
-  type FollowerRange,
-} from '@/lib/followerRange';
-import { isValidInstagramHandle } from '@/lib/handles';
+  importScrapedProfiles,
+  EMPTY_IMPORT_OUTCOME,
+  type ImportOutcome,
+} from '@/lib/profileImport';
+import { normaliseRange } from '@/lib/followerRange';
+import { isValidInstagramHandle, looseHandle as norm } from '@/lib/handles';
 import { recomputeCastingProfile } from '@/lib/castingProfile';
-import type { InstagramProfile } from '@/lib/types';
 
 /**
  * Scrapes one brand's Instagram feed, discovers the creators it collaborates
@@ -54,36 +52,11 @@ import type { InstagramProfile } from '@/lib/types';
  * live platform app. The only brands column written here is feed_scraped_at.
  */
 
-/**
- * brand_aliases classifications that are not importable creators.
- * 'creator' and 'unknown' proceed, as do handles with no alias row at all —
- * unknown is genuinely unclassified and excluding it would discard exactly
- * the new creators we are looking for.
- */
-const NON_CREATOR_ENTITY_TYPES = ['brand', 'celebrity', 'media', 'venue', 'fragment'];
-
-/**
- * Only brands rows with real scraped profile data are trusted as a
- * "this is a brand" signal.
- *
- * The other 11,402 rows come from data_source='enrich_pipeline', which files
- * a brands row for every handle any creator ever mentioned. 233 known
- * Instagram creators sit in that set, 220 of them inside a 30k-500k band —
- * excluding on the whole table would blacklist the creators we want.
- */
-const TRUSTED_BRAND_DATA_SOURCES = ['sponsorship_detection'];
-
-/** Out-of-range examples surfaced per brand, per direction. */
-const SAMPLES_PER_DIRECTION = 12;
-
 /** Guard against a single post tagging an implausible number of accounts. */
 const MAX_NEW_CREATORS_PER_BRAND = 60;
 
 /** PostgREST `in.()` lists go in the URL; keep them well short of URL limits. */
 const LOOKUP_CHUNK = 100;
-
-const norm = (value: unknown) =>
-  String(value ?? '').trim().toLowerCase().replace(/^@/, '');
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -148,40 +121,6 @@ async function resolveOrCreateBrand(
   throw new Error(`Could not resolve or create brand row for ${brandHandle}: ${error?.message}`);
 }
 
-// ── Filter 1: entity classification (free, pre-scrape) ────────────────────────
-
-/**
- * Handles that are not importable creators, from either classification source.
- * Runs before the profile scrape so excluded handles cost nothing.
- */
-async function loadEntityExcludedHandles(handles: string[]): Promise<Set<string>> {
-  const excluded = new Set<string>();
-  if (handles.length === 0) return excluded;
-
-  for (const batch of chunk(handles, LOOKUP_CHUNK)) {
-    const [aliasResult, brandResult] = await Promise.all([
-      supabase
-        .from('brand_aliases')
-        .select('alias, entity_type')
-        .in('alias', batch)
-        .in('entity_type', NON_CREATOR_ENTITY_TYPES),
-      supabase
-        .from('brands')
-        .select('instagram_handle, data_source')
-        .in('instagram_handle', batch)
-        .in('data_source', TRUSTED_BRAND_DATA_SOURCES),
-    ]);
-
-    if (aliasResult.error) throw new Error(`brand_aliases lookup failed: ${aliasResult.error.message}`);
-    if (brandResult.error) throw new Error(`brands lookup failed: ${brandResult.error.message}`);
-
-    for (const row of aliasResult.data || []) excluded.add(norm(row.alias));
-    for (const row of brandResult.data || []) excluded.add(norm(row.instagram_handle));
-  }
-
-  return excluded;
-}
-
 interface ResolvedCreator {
   creatorId: string;
   /** Snapshotted onto the edge so the casting profile cannot drift. */
@@ -228,111 +167,6 @@ async function resolveCreators(handles: string[]): Promise<Map<string, ResolvedC
   }
 
   return resolved;
-}
-
-// ── Filter 2: follower range (post-scrape) + import ───────────────────────────
-
-interface ImportOutcome {
-  attempted: number;
-  saved: number;
-  failed: number;
-  inRange: number;
-  outOfRangeHigh: number;
-  outOfRangeLow: number;
-  /** Followers not measured — a failed or private scrape, not a small account. */
-  unknownSize: number;
-  outOfRangeSamples: { handle: string; followerCount: number; status: string }[];
-  errors: string[];
-}
-
-/**
- * Profile-scrapes newly discovered handles and pushes them through the shared
- * creator import path, so they land in creators/social_profiles exactly as
- * hashtag discovery and manual entry do.
- *
- * Both in-range and out-of-range creators are imported. The range only decides
- * import_status, which is what keeps out-of-range profiles out of the
- * enrichment, intelligence and embedding queues.
- */
-async function importNewCreators(
-  handles: string[],
-  range: FollowerRange
-): Promise<ImportOutcome> {
-  const empty: ImportOutcome = {
-    attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
-    unknownSize: 0, outOfRangeSamples: [], errors: [],
-  };
-  if (handles.length === 0) return empty;
-
-  const { runId } = await startProfileScraper(handles);
-  const { datasetId } = await waitForRun(runId);
-
-  if (!datasetId) throw new Error(`Profile scrape for ${handles.length} handles returned no dataset`);
-
-  const profiles = await getDatasetItems<InstagramProfile>(datasetId);
-
-  const creators: ImportableCreator[] = [];
-  const outOfRangeSamples: { handle: string; followerCount: number; status: string }[] = [];
-  let inRange = 0;
-  let outOfRangeHigh = 0;
-  let outOfRangeLow = 0;
-  let unknownSize = 0;
-
-  for (const profile of profiles) {
-    const mapped = mapProfileToCreator(profile);
-    const handle = norm(mapped.handle);
-    if (!handle) continue;
-
-    const importStatus = importStatusFor(mapped.followerCount, range);
-    if (importStatus === 'out_of_range_high') outOfRangeHigh++;
-    else if (importStatus === 'out_of_range_low') outOfRangeLow++;
-    else if (importStatus === 'unknown_size') unknownSize++;
-    else inRange++;
-
-    // Cap per direction, not overall: a shared cap would let a brand tagging
-    // a dozen mega-accounts crowd the small ones out of the sample entirely,
-    // and the below-min accounts are the ones worth eyeballing for promotion.
-    if (importStatus !== 'active') {
-      const sameDirection = outOfRangeSamples.filter(s => s.status === importStatus).length;
-      if (sameDirection < SAMPLES_PER_DIRECTION) {
-        outOfRangeSamples.push({
-          handle, followerCount: mapped.followerCount, status: importStatus,
-        });
-      }
-    }
-
-    creators.push({
-      handle,
-      fullName: mapped.fullName,
-      bio: (mapped.bio || '').slice(0, 500),
-      followerCount: mapped.followerCount,
-      followingCount: mapped.followingCount,
-      postsCount: mapped.postsCount,
-      engagementRate: mapped.engagementRate,
-      isVerified: mapped.isVerified,
-      isBusinessAccount: mapped.isBusinessAccount,
-      categoryName: mapped.categoryName,
-      profilePicUrl: mapped.profilePicUrl,
-      profileUrl: mapped.profileUrl,
-      website: mapped.website,
-      discoveredViaHashtags: ['brand_feed'],
-      importStatus,
-    });
-  }
-
-  const result = await saveDiscoveredCreators(creators, 'instagram');
-
-  return {
-    attempted: handles.length,
-    saved: result.saved,
-    failed: result.failed,
-    inRange,
-    outOfRangeHigh,
-    outOfRangeLow,
-    unknownSize,
-    outOfRangeSamples,
-    errors: result.errors.slice(0, 5),
-  };
 }
 
 // ── Edge writing ──────────────────────────────────────────────────────────────
@@ -445,7 +279,7 @@ export async function POST(request: NextRequest) {
     ];
 
     // 4. Entity filter — free, before any scraping.
-    const entityExcluded = await loadEntityExcludedHandles(candidateHandles);
+    const entityExcluded = await loadEntityExcludedHandles(candidateHandles, 'instagram');
     const importable = candidateHandles.filter(h => !entityExcluded.has(h));
 
     // 5. Resolve creator ids for ALL candidates, excluded ones included: an
@@ -469,13 +303,14 @@ export async function POST(request: NextRequest) {
     // fires — the run simply completes as before.
     const abortedMidItem = request.signal?.aborted === true;
 
-    const importResult = abortedMidItem
-      ? {
-          attempted: 0, saved: 0, failed: 0,
-          inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0, unknownSize: 0,
-          outOfRangeSamples: [], errors: ['cancelled before profile scrape'],
-        }
-      : await importNewCreators(newHandles, range);
+    const importResult: ImportOutcome = abortedMidItem
+      ? { ...EMPTY_IMPORT_OUTCOME, errors: ['cancelled before profile scrape'] }
+      : await importScrapedProfiles(newHandles, {
+          range,
+          // The two values this call used to hardcode inside the function.
+          platform: 'instagram',
+          discoveredViaHashtags: ['brand_feed'],
+        });
 
     if (importResult.saved > 0) {
       // Re-read after the import so newly created profiles bring their freshly

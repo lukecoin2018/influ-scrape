@@ -238,3 +238,40 @@ export async function waitForRun(
 
   throw new Error(`Apify run ${runId} did not finish within ${Math.round(timeoutMs / 1000)}s`);
 }
+
+
+/**
+ * Maps a TikTok profile item onto the same creator shape as
+ * mapProfileToCreator().
+ *
+ * Moved here verbatim from app/page.tsx so the server-side import path can
+ * reach it — it sat in a client component, which is why every server route so
+ * far has been Instagram-only. The field fallbacks look redundant but are not:
+ * the actor emits `followers` as a bare number on some builds and as
+ * `{ raw }` on others, and the flattened `likes.raw` form appears in dataset
+ * exports.
+ *
+ * isBusinessAccount and categoryName are absent rather than defaulted, because
+ * TikTok exposes neither; consumers treat them as optional.
+ */
+export function mapTikTokProfile(profile: any) {
+  const handle = (profile.username || '').toLowerCase();
+  return {
+    handle,
+    fullName: profile.displayName || '',
+    bio: (profile.bio || '').slice(0, 500),
+    followerCount: profile.followers?.raw || profile.followers || 0,
+    followingCount: profile.following?.raw || profile.following || 0,
+    postsCount: profile.videos?.raw || profile.videos || 0,
+    engagementRate: null,
+    isVerified: false,
+    profilePicUrl: profile.profileImage || '',
+    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
+    website: '',
+    platformData: {
+      likes_count: profile['likes.raw'] || profile.likes?.raw || profile.likes_raw || profile.likes || 0,
+      video_count: profile['videos.raw'] || profile.videos?.raw || profile.videos_raw || profile.videos || 0,
+      tagline: profile.tagline || '',
+    },
+  };
+}

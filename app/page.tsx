@@ -7,6 +7,7 @@ import ResultsTable from '@/components/ResultsTable';
 import BrandsTable from '@/components/BrandsTable';
 import type { DiscoveryConfig, PipelineStatus, DiscoveredCreator, DetectedBrand, Partnership, SponsorshipStats } from '@/lib/types';
 import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from '@/lib/brandDetection';
+import { mapTikTokProfile } from '@/lib/apify';
 
 type Platform = 'instagram' | 'tiktok';
 
@@ -28,27 +29,6 @@ function slimCreator(creator: DiscoveredCreator) {
     platformData: (creator as any).platformData || {
       is_business_account: creator.isBusinessAccount || false,
       category_name: creator.categoryName || null,
-    },
-  };
-}
-function mapTikTokProfile(profile: any) {
-  const handle = (profile.username || '').toLowerCase();
-  return {
-    handle,
-    fullName: profile.displayName || '',
-    bio: (profile.bio || '').slice(0, 500),
-    followerCount: profile.followers?.raw || profile.followers || 0,
-    followingCount: profile.following?.raw || profile.following || 0,
-    postsCount: profile.videos?.raw || profile.videos || 0,
-    engagementRate: null,
-    isVerified: false,
-    profilePicUrl: profile.profileImage || '',
-    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
-    website: '',
-    platformData: {
-      likes_count: profile['likes.raw'] || profile.likes?.raw || profile.likes_raw || profile.likes || 0,
-      video_count: profile['videos.raw'] || profile.videos?.raw || profile.videos_raw || profile.videos || 0,
-      tagline: profile.tagline || '',
     },
   };
 }
