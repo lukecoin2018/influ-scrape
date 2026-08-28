@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {
   estimateDiscoveryCost,
   AUTHORS_PER_POST,
-  HASHTAG_RESULT_USD,
-  PROFILE_RESULT_USD,
+  ACTOR_PRICES_USD,
   BRAND_PROFILES_PER_POST,
 } from './discoveryCost.ts';
 
@@ -69,14 +68,14 @@ test('sponsorship adds a brand-profile term that niche does not', () => {
   assert.ok(spon.brandProfiles > 0);
   assert.equal(spon.posts, niche.posts);
   assert.equal(spon.authorProfiles, niche.authorProfiles);
-  assert.equal(spon.brandUsd, spon.brandProfiles * PROFILE_RESULT_USD);
+  assert.equal(spon.brandUsd, spon.brandProfiles * ACTOR_PRICES_USD.instagram.profileResult);
 });
 
 test('components sum to the total', () => {
   for (const mode of ['niche', 'sponsorship'] as const) {
     const e = estimateDiscoveryCost(7, 130, mode);
     assert.equal(e.totalUsd, e.hashtagUsd + e.profileUsd + e.brandUsd);
-    assert.equal(e.hashtagUsd, e.posts * HASHTAG_RESULT_USD);
+    assert.equal(e.hashtagUsd, e.posts * ACTOR_PRICES_USD.instagram.hashtagResult);
     assert.equal(e.authorProfiles, Math.round(e.posts * AUTHORS_PER_POST));
   }
 });
@@ -105,4 +104,52 @@ test('the first-run configuration from the conversion plan is under a dollar', (
 
 test('BRAND_PROFILES_PER_POST is the documented upper bound', () => {
   assert.equal(BRAND_PROFILES_PER_POST, 1.94);
+});
+
+// ── L2: platform-split pricing ────────────────────────────────────────────────
+
+test('L2: TikTok is priced higher than Instagram for the same run', () => {
+  const ig = estimateDiscoveryCost(6, 200, 'niche', 'instagram');
+  const tt = estimateDiscoveryCost(6, 200, 'niche', 'tiktok');
+
+  assert.equal(ig.posts, tt.posts);
+  assert.equal(ig.authorProfiles, tt.authorProfiles);
+  assert.ok(tt.totalUsd > ig.totalUsd);
+
+  // 1200 posts x 0.0037 + 895 profiles x 0.005
+  assert.equal(round(tt.totalUsd), 8.92);
+  assert.equal(round(ig.totalUsd), 5.45);
+});
+
+test('L2: a single Instagram-priced constant understated TikTok by ~64%', () => {
+  const ig = estimateDiscoveryCost(6, 200, 'niche', 'instagram');
+  const tt = estimateDiscoveryCost(6, 200, 'niche', 'tiktok');
+  assert.ok(tt.totalUsd / ig.totalUsd > 1.6);
+});
+
+test('L2: the platform defaults to instagram, so existing callers are unchanged', () => {
+  assert.deepEqual(
+    estimateDiscoveryCost(6, 200, 'niche'),
+    estimateDiscoveryCost(6, 200, 'niche', 'instagram'),
+  );
+});
+
+test('L2: sponsorship adds no brand term on TikTok — that mode is Instagram-only', () => {
+  const tt = estimateDiscoveryCost(44, 200, 'sponsorship', 'tiktok');
+  assert.equal(tt.brandProfiles, 0);
+  assert.equal(tt.brandUsd, 0);
+
+  const ig = estimateDiscoveryCost(44, 200, 'sponsorship', 'instagram');
+  assert.ok(ig.brandProfiles > 0);
+});
+
+test('L2: prices are the ones read from each actor', () => {
+  assert.equal(ACTOR_PRICES_USD.instagram.hashtagResult, 0.0026);
+  assert.equal(ACTOR_PRICES_USD.instagram.profileResult, 0.0026);
+  assert.equal(ACTOR_PRICES_USD.tiktok.hashtagResult, 0.0037);
+  assert.equal(ACTOR_PRICES_USD.tiktok.profileResult, 0.0050);
+});
+
+test('L2: the first-run configuration is still under a dollar on Instagram', () => {
+  assert.ok(estimateDiscoveryCost(2, 100, 'niche', 'instagram').totalUsd < 1);
 });

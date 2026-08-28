@@ -36,9 +36,11 @@ const SPONSORSHIP_HASHTAGS = [
 interface SetupPanelProps {
   onStartDiscovery: (config: DiscoveryConfig) => void;
   isRunning: boolean;
+  /** Priced per platform: the TikTok actors cost roughly twice the Instagram ones. */
+  platform?: 'instagram' | 'tiktok';
 }
 
-export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelProps) {
+export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'instagram' }: SetupPanelProps) {
   const [mode, setMode] = useState<DiscoveryMode>('niche');
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
@@ -78,7 +80,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
   };
 
   const hashtagCount = hashtags.split(',').filter(h => h.trim()).length;
-  const cost = estimateDiscoveryCost(hashtagCount, resultsPerHashtag, mode);
+  const cost = estimateDiscoveryCost(hashtagCount, resultsPerHashtag, mode, platform);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">

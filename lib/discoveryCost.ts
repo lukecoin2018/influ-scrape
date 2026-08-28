@@ -22,11 +22,29 @@ import type { DiscoveryMode } from './types';
  * worse than one that reads high.
  */
 
-/** apify/instagram-hashtag-scraper, `result` event, FREE tier. */
-export const HASHTAG_RESULT_USD = 0.0026;
+/**
+ * Per-result prices, by platform, from each actor's own pricing metadata at the
+ * FREE subscription tier.
+ *
+ * Split by platform because the TikTok actors are materially dearer, and a
+ * single constant understated a TikTok run by roughly half — which defeats the
+ * point of estimating at all.
+ *
+ *   instagram hashtag  apify/instagram-hashtag-scraper   $0.0026 / result
+ *   instagram profile  apify/instagram-profile-scraper   $0.0026 / profile
+ *   tiktok    hashtag  clockworks/tiktok-scraper         $0.0037 / result
+ *   tiktok    profile  abe/tiktok-profile-scraper        $0.0050 / profile
+ *
+ * Higher subscription tiers are cheaper, so these read high for anyone on a
+ * paid plan. That is deliberate: an estimate that reads low is worse than one
+ * that reads high.
+ */
+export const ACTOR_PRICES_USD = {
+  instagram: { hashtagResult: 0.0026, profileResult: 0.0026 },
+  tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050 },
+} as const;
 
-/** apify/instagram-profile-scraper, `profile` event, FREE tier. */
-export const PROFILE_RESULT_USD = 0.0026;
+export type CostPlatform = keyof typeof ACTOR_PRICES_USD;
 
 /**
  * Unique post authors per post returned.
@@ -35,6 +53,10 @@ export const PROFILE_RESULT_USD = 0.0026;
  * 29,739 posts. Instagram hashtag pages repeat authors only mildly. The
  * weighted figure is stable across run sizes — runs of 400+ posts give 0.740
  * against 0.746 overall — so a single constant is honest here.
+ *
+ * Measured on INSTAGRAM runs only; every logged run predates TikTok Discovery.
+ * TikTok's ratio is unmeasured and applied here as the best available estimate.
+ * The first TikTok run makes it measurable from discovery_candidates.
  */
 export const AUTHORS_PER_POST = 0.746;
 
@@ -77,17 +99,23 @@ function count(value: number): number {
 export function estimateDiscoveryCost(
   hashtagCount: number,
   resultsPerHashtag: number,
-  mode: DiscoveryMode
+  mode: DiscoveryMode,
+  platform: CostPlatform = 'instagram'
 ): DiscoveryCostEstimate {
+  const price = ACTOR_PRICES_USD[platform] ?? ACTOR_PRICES_USD.instagram;
+
   const posts = count(hashtagCount) * count(resultsPerHashtag);
   const authorProfiles = Math.round(posts * AUTHORS_PER_POST);
-  const brandProfiles = mode === 'sponsorship'
+
+  // Sponsorship mode is Instagram-only, so brand profiles are always priced at
+  // the Instagram rate regardless of the platform argument.
+  const brandProfiles = mode === 'sponsorship' && platform === 'instagram'
     ? Math.round(posts * BRAND_PROFILES_PER_POST)
     : 0;
 
-  const hashtagUsd = posts * HASHTAG_RESULT_USD;
-  const profileUsd = authorProfiles * PROFILE_RESULT_USD;
-  const brandUsd = brandProfiles * PROFILE_RESULT_USD;
+  const hashtagUsd = posts * price.hashtagResult;
+  const profileUsd = authorProfiles * price.profileResult;
+  const brandUsd = brandProfiles * ACTOR_PRICES_USD.instagram.profileResult;
 
   return {
     posts,

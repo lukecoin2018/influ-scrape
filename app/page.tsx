@@ -771,6 +771,7 @@ const brandRunId = brandData.runId;
             </div>
 
             <SetupPanel
+              platform={platform}
               onStartDiscovery={startDiscovery}
               isRunning={
                 isStarting || runner.isRunning ||
