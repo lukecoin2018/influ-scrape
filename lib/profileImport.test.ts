@@ -393,3 +393,171 @@ test('G2: each bucket caps independently at its own constant', async () => {
   assert.equal(out.unknownSizeSamples.length, UNKNOWN_SIZE_SAMPLE_CAP);
   assert.equal(out.outOfRangeSamples.length, 0, 'nothing measured, so nothing to sample');
 });
+
+// ── C6: the run budget, tested the same way cancellation is ───────────────────
+
+test('C6: once the deadline passes, NO further scrape run is started', async () => {
+  const save = saveSpy();
+  let clock = 1_000_000;
+  const calls: string[][] = [];
+  const scrapeBatch = async (batch: string[]) => {
+    calls.push([...batch]);
+    clock += 60_000; // this batch took a minute
+    return batch.map(h => igProfile(h, 100_000));
+  };
+
+  // 500 handles at 50 per batch is 10 runs; the budget allows one.
+  const out = await runProfileImport(handles(500), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 50, scrapeBatch, saveCreators: save.fn,
+    deadlineAt: clock + 30_000,
+    now: () => clock,
+  });
+
+  assert.equal(calls.length, 1, 'nine further billable runs prevented');
+  assert.equal(out.timedOut, true);
+  assert.equal(out.cancelled, false, 'a timeout is not a cancellation');
+});
+
+test('C6: a timeout returns the same honest partial counts a cancellation does', async () => {
+  const build = async (mode: 'timeout' | 'cancel') => {
+    const save = saveSpy();
+    const controller = new AbortController();
+    let clock = 0;
+    let n = 0;
+    const scrapeBatch = async (batch: string[]) => {
+      if (++n === 3) {
+        if (mode === 'cancel') controller.abort();
+        else clock = 10_000;
+      }
+      return batch.map(h => igProfile(h, 100_000));
+    };
+
+    return runProfileImport(handles(200), {
+      range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+      batchSize: 50, scrapeBatch, saveCreators: save.fn,
+      ...(mode === 'cancel'
+        ? { signal: controller.signal }
+        : { deadlineAt: 5_000, now: () => clock }),
+    });
+  };
+
+  const timedOut = await build('timeout');
+  const cancelled = await build('cancel');
+
+  // Identical partial results — only the reason differs.
+  assert.equal(timedOut.attempted, cancelled.attempted);
+  assert.equal(timedOut.saved, cancelled.saved);
+  assert.equal(timedOut.inRange, cancelled.inRange);
+  assert.equal(timedOut.attempted, 150, 'three batches completed, one skipped');
+  assert.equal(timedOut.saved, 150, 'every measured profile was kept');
+
+  assert.equal(timedOut.timedOut, true);
+  assert.equal(timedOut.cancelled, false);
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(cancelled.timedOut, false);
+});
+
+test('C6: a deadline that never passes runs everything', async () => {
+  const scrape = scrapeSpy(), save = saveSpy();
+  const out = await runProfileImport(handles(150), {
+    ...base(scrape, save), batchSize: 50,
+    deadlineAt: Number.MAX_SAFE_INTEGER, now: () => 0,
+  });
+
+  assert.equal(scrape.calls.length, 3);
+  assert.equal(out.timedOut, false);
+  assert.equal(out.attempted, 150);
+});
+
+test('C6: an explicit Stop is reported as cancelled even when the budget is also spent', async () => {
+  const save = saveSpy();
+  const controller = new AbortController();
+  controller.abort();
+
+  const out = await runProfileImport(handles(100), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 50, saveCreators: save.fn,
+    scrapeBatch: async () => [],
+    signal: controller.signal,
+    deadlineAt: 0, now: () => 1_000_000, // budget also long gone
+  });
+
+  assert.equal(out.cancelled, true, 'user intent beats the clock');
+  assert.equal(out.timedOut, false);
+});
+
+test('C6: omitting deadlineAt leaves timedOut false and changes nothing', async () => {
+  const scrape = scrapeSpy(), save = saveSpy();
+  const out = await runProfileImport(handles(100), { ...base(scrape, save), batchSize: 50 });
+  assert.equal(out.timedOut, false);
+  assert.equal(scrape.calls.length, 2);
+});
+
+// ── K3: missing is distinguishable from never-reached ─────────────────────────
+
+test('K3: scrapedHandles covers only batches that actually returned', async () => {
+  const save = saveSpy();
+  const scrapeBatch = async (batch: string[]) => batch.map(h => igProfile(h, 100_000));
+
+  const out = await runProfileImport(handles(120), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 50, scrapeBatch, saveCreators: save.fn,
+  });
+
+  assert.deepEqual(out.scrapedHandles, handles(120));
+});
+
+test('K3: handles never reached after a cancel are NOT reported as scraped', async () => {
+  const controller = new AbortController();
+  const save = saveSpy();
+  const scrapeBatch = async (batch: string[]) => {
+    controller.abort();
+    return batch.map(h => igProfile(h, 100_000));
+  };
+
+  const out = await runProfileImport(handles(200), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 50, scrapeBatch, saveCreators: save.fn, signal: controller.signal,
+  });
+
+  assert.equal(out.scrapedHandles.length, 50, 'only the one completed batch');
+  // The 150 unreached handles are absent, so the route cannot mislabel them
+  // scrape_missing — they keep their not_scraped row.
+  const returned = new Set(out.measured.map(m => m.handle));
+  assert.deepEqual(out.scrapedHandles.filter(h => !returned.has(h)), []);
+});
+
+test('K3: a batch that threw does not count its handles as scraped', async () => {
+  const save = saveSpy();
+  let n = 0;
+  const scrapeBatch = async (batch: string[]) => {
+    if (++n === 2) throw new Error('actor run failed');
+    return batch.map(h => igProfile(h, 100_000));
+  };
+
+  const out = await runProfileImport(handles(150), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 50, scrapeBatch, saveCreators: save.fn,
+  });
+
+  assert.equal(out.attempted, 150, 'all three batches were billed');
+  assert.equal(out.scrapedHandles.length, 100, 'but only two returned data');
+  assert.equal(out.failed, 50);
+});
+
+test('K3: a genuinely missing profile IS reported, exactly', async () => {
+  const save = saveSpy();
+  // The actor omits h1 and h3 — private or deleted accounts.
+  const scrapeBatch = async (batch: string[]) =>
+    batch.filter(h => !['h1', 'h3'].includes(h)).map(h => igProfile(h, 100_000));
+
+  const out = await runProfileImport(handles(10), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch, saveCreators: save.fn,
+  });
+
+  const returned = new Set(out.measured.map(m => m.handle));
+  const missing = out.scrapedHandles.filter(h => !returned.has(h));
+  assert.deepEqual(missing.sort(), ['h1', 'h3']);
+});

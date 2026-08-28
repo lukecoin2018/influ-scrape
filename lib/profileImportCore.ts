@@ -58,6 +58,25 @@ export interface CacheOnlyEntry {
   followerCount: number;
 }
 
+/**
+ * Per-handle record of everything actually measured.
+ *
+ * The counters say how many; this says which. The Discovery route needs it to
+ * write follower_count and a per-handle outcome back to discovery_candidates —
+ * aggregates cannot be attributed to handles after the fact.
+ *
+ * `cacheOnly` is the subset of this where decision === 'cache_only'. Kept as
+ * its own list because it is the cache write specifically, and carries only
+ * the three fields that write needs.
+ */
+export interface MeasuredHandle {
+  handle: string;
+  platform: string;
+  followerCount: number;
+  status: ImportStatus;
+  decision: ImportDecision;
+}
+
 export interface ImportOutcome {
   attempted: number;
   saved: number;
@@ -72,9 +91,23 @@ export interface ImportOutcome {
   unknownSizeSamples: { handle: string; followerCount: number }[];
   /** Observed but deliberately not imported, per the policy. */
   cacheOnly: CacheOnlyEntry[];
+  /** Every handle a profile came back for, with its verdict. */
+  measured: MeasuredHandle[];
+  /**
+   * Handles whose batch was submitted AND returned successfully.
+   *
+   * Lets a caller tell "the actor returned nothing for this handle" from
+   * "this handle was never reached" — the two are indistinguishable from the
+   * input list alone once a run is cancelled or times out. Excludes batches
+   * that threw: those handles were billed but produced no data, which is a
+   * batch failure rather than a missing profile.
+   */
+  scrapedHandles: string[];
   errors: string[];
   /** True when a batch was skipped because the signal aborted. */
   cancelled: boolean;
+  /** True when a batch was skipped because the run budget ran out. */
+  timedOut: boolean;
 }
 
 export interface ProfileImportCoreOptions {
@@ -108,6 +141,21 @@ export interface ProfileImportCoreOptions {
    */
   policy?: ImportPolicy;
   /**
+   * Epoch milliseconds after which no NEW batch is started.
+   *
+   * A serverless request has a hard wall, and one Discovery hashtag can be a
+   * hashtag scrape plus eighteen profile batches. Without a budget the request
+   * is killed mid-batch and everything it learned — including which handles it
+   * already paid to measure — is lost. Stopping voluntarily returns the same
+   * honest partial counts a cancellation does.
+   *
+   * Checked after the abort signal, so a user pressing Stop is reported as a
+   * cancellation rather than a timeout even if both are true at once.
+   */
+  deadlineAt?: number;
+  /** Injectable clock, so the deadline branch is testable without waiting. */
+  now?: () => number;
+  /**
    * Seam over the Apify round trip: start a run, wait for it, read the dataset.
    *
    * Injectable so the batching and cancellation logic can be tested without a
@@ -118,7 +166,8 @@ export interface ProfileImportCoreOptions {
   /**
    * Seam over the database write, for the same reason as scrapeBatch: the
    * batching and cancellation behaviour has to be testable without writing
-   * rows.
+   * rows. Both default to the real implementation, so production callers pass
+   * neither.
    */
   saveCreators: (creators: ImportableCreator[], platform: string) => Promise<ImportResult>;
 }
@@ -128,7 +177,8 @@ export interface ProfileImportCoreOptions {
  *
  * Both mappers satisfy it structurally. The Instagram mapper returns
  * isBusinessAccount and categoryName; the TikTok one returns platformData and
- * omits the other two, since TikTok exposes neither.
+ * omits the other two, since TikTok exposes neither. Declaring the union here
+ * rather than widening either mapper keeps both of them untouched by this move.
  */
 export interface MappedProfile {
   handle: string;
@@ -150,7 +200,7 @@ export interface MappedProfile {
 export const EMPTY_IMPORT_OUTCOME: ImportOutcome = {
   attempted: 0, saved: 0, failed: 0, inRange: 0, outOfRangeHigh: 0, outOfRangeLow: 0,
   unknownSize: 0, outOfRangeSamples: [], unknownSizeSamples: [], cacheOnly: [],
-  errors: [], cancelled: false,
+  measured: [], scrapedHandles: [], errors: [], cancelled: false, timedOut: false,
 };
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -174,6 +224,8 @@ export async function runProfileImport(
     scrapeBatch,
     saveCreators,
     policy = () => 'import',
+    deadlineAt,
+    now = Date.now,
   } = options;
 
   if (handles.length === 0) return { ...EMPTY_IMPORT_OUTCOME };
@@ -181,6 +233,8 @@ export async function runProfileImport(
   const outOfRangeSamples: { handle: string; followerCount: number; status: string }[] = [];
   const unknownSizeSamples: { handle: string; followerCount: number }[] = [];
   const cacheOnly: CacheOnlyEntry[] = [];
+  const measured: MeasuredHandle[] = [];
+  const scrapedHandles: string[] = [];
   const errors: string[] = [];
   let attempted = 0;
   let saved = 0;
@@ -190,12 +244,20 @@ export async function runProfileImport(
   let outOfRangeLow = 0;
   let unknownSize = 0;
   let cancelled = false;
+  let timedOut = false;
 
   for (const batch of chunk(handles, batchSize)) {
     // Before the scrape, not after: the cost being avoided is a billable Apify
     // run, so the check has to precede the call that starts one.
     if (signal?.aborted) {
       cancelled = true;
+      break;
+    }
+
+    // Same position and the same reason. Cancellation is tested first so an
+    // explicit Stop is never reported as a timeout.
+    if (deadlineAt !== undefined && now() >= deadlineAt) {
+      timedOut = true;
       break;
     }
 
@@ -218,6 +280,10 @@ export async function runProfileImport(
     }
 
     attempted += batch.length;
+    // Recorded only once the scrape has returned, so a batch that threw is not
+    // counted as having covered its handles.
+    for (const handle of batch) scrapedHandles.push(norm(handle));
+
     const creators: ImportableCreator[] = [];
 
     for (const profile of rawProfiles) {
@@ -253,7 +319,12 @@ export async function runProfileImport(
 
       // Routing. A cache-only handle is still counted and still sampled above —
       // it was observed — but no creator record is written for it.
-      if (policy(mapped, importStatus) === 'cache_only') {
+      const decision = policy(mapped, importStatus);
+      measured.push({
+        handle, platform, followerCount: mapped.followerCount, status: importStatus, decision,
+      });
+
+      if (decision === 'cache_only') {
         cacheOnly.push({ handle, platform, followerCount: mapped.followerCount });
         continue;
       }
@@ -299,7 +370,11 @@ export async function runProfileImport(
     outOfRangeSamples,
     unknownSizeSamples,
     cacheOnly,
+    measured,
+    scrapedHandles,
     errors: errors.slice(0, 5),
     cancelled,
+    timedOut,
   };
 }
+

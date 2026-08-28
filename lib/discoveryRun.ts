@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
-import { latestMeasurements, type CachedMeasurement } from './discoveryCache';
+import { looseHandle as norm } from './handles';
+import {
+  latestMeasurements,
+  type CachedMeasurement,
+  type CandidateOutcome,
+} from './discoveryCache';
 
 /**
  * Discovery run records and the candidate log / reject cache — database access.
@@ -46,4 +51,99 @@ export async function loadCachedMeasurements(
   }
 
   return latestMeasurements(rows);
+}
+
+/** Handles already present in ANY population, so no scrape is needed. */
+export async function loadKnownHandles(
+  handles: string[],
+  platform: string,
+): Promise<Set<string>> {
+  const known = new Set<string>();
+  if (handles.length === 0) return known;
+
+  for (const batch of chunk(handles, LOOKUP_CHUNK)) {
+    // v_social_profiles_all, not social_profiles: an out-of-range creator lives
+    // in the archive, and looking only at the live table would re-scrape them
+    // on every run.
+    const { data, error } = await supabase
+      .from('v_social_profiles_all')
+      .select('handle')
+      .eq('platform', platform)
+      .in('handle', batch);
+
+    if (error) throw new Error(`known-handle lookup failed: ${error.message}`);
+    for (const row of data || []) known.add(String(row.handle).toLowerCase());
+  }
+
+  return known;
+}
+
+export interface CandidateRow {
+  handle: string;
+  outcome: CandidateOutcome;
+  /** Omitted until the profile scrape returns a reading. */
+  followerCount?: number | null;
+}
+
+/**
+ * Writes candidate rows for one search term.
+ *
+ * Called twice per hashtag: once before the profile scrape with every
+ * candidate and no follower counts, then again afterwards for the handles that
+ * were measured. The second call upserts on (run_id, platform, handle), so the
+ * pre-scrape row is updated in place rather than duplicated.
+ *
+ * measured_at is set if and only if a follower count is present — the pairing
+ * the table's CHECK constraint enforces.
+ */
+export async function writeCandidates(
+  runId: string,
+  hashtag: string,
+  platform: string,
+  rows: CandidateRow[],
+): Promise<number> {
+  if (rows.length === 0) return 0;
+
+  const now = new Date().toISOString();
+  const payload = rows.map(row => {
+    const measured = typeof row.followerCount === 'number' && Number.isFinite(row.followerCount);
+    return {
+      run_id: runId,
+      hashtag,
+      platform,
+      handle: norm(row.handle),
+      outcome: row.outcome,
+      follower_count: measured ? row.followerCount : null,
+      measured_at: measured ? now : null,
+    };
+  });
+
+  let written = 0;
+  for (const batch of chunk(payload, LOOKUP_CHUNK)) {
+    const { error } = await supabase
+      .from('discovery_candidates')
+      .upsert(batch, { onConflict: 'run_id,platform,handle' });
+
+    if (error) throw new Error(`discovery_candidates write failed: ${error.message}`);
+    written += batch.length;
+  }
+
+  return written;
+}
+
+/**
+ * Advances last_progress_at.
+ *
+ * This is what makes an abandoned run identifiable: a run still marked
+ * 'running' that has been silent longer than a live one plausibly could be.
+ * Failure is logged, not thrown — losing a heartbeat must not fail a hashtag
+ * whose scrape has already been paid for.
+ */
+export async function touchRun(runId: string): Promise<void> {
+  const { error } = await supabase
+    .from('discovery_runs')
+    .update({ last_progress_at: new Date().toISOString() })
+    .eq('id', runId);
+
+  if (error) console.error(`Failed to touch run ${runId}:`, error.message);
 }

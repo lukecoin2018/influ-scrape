@@ -275,3 +275,68 @@ export function mapTikTokProfile(profile: any) {
     },
   };
 }
+
+
+/**
+ * TikTok hashtag/keyword search. clockworks~tiktok-scraper.
+ *
+ * Lifted from app/api/tiktok/start-hashtag-scrape so the server-side Discovery
+ * route can call it directly instead of going through an HTTP hop that
+ * middleware would redirect to /login on a server-to-server request.
+ */
+export async function startTikTokHashtagScraper(
+  hashtags: string[],
+  resultsPerPage: number = 50
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'clockworks~tiktok-scraper';
+  const input = {
+    hashtags,
+    resultsPerPage,
+    proxyConfiguration: { useApifyProxy: true },
+  };
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start TikTok hashtag scraper: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+  return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
+}
+
+/**
+ * TikTok profile lookup. abe~tiktok-profile-scraper, matching the actor the
+ * existing /api/tiktok/start-profile-scrape route uses.
+ */
+export async function startTikTokProfileScraper(
+  usernames: string[]
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'abe~tiktok-profile-scraper';
+  const input = { usernames: usernames.map(u => u.replace(/^@/, '')) };
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start TikTok profile scraper: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+  return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
+}

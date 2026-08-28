@@ -292,3 +292,80 @@ The database access goes in a thin sibling that re-exports it.
 **Trigger:** if this bites a third time, make `lib/supabase.ts` lazy — export a
 getter that constructs on first use rather than at import — which would remove
 the constraint entirely instead of routing around it each time.
+
+---
+
+## 10. RESOLVED — `scrape_missing` attribution is now exact
+
+**Was:** the Discovery route inferred the missing set by difference (handles
+sent minus handles returned) and capped it at `imported.attempted`, so an
+interrupted run could label unreached handles as `scrape_missing`.
+
+**Resolved in C6** by having `runProfileImport` report `scrapedHandles` — the
+handles whose batch was submitted AND returned successfully. Missing is now
+computed against that rather than against the whole input, so:
+
+- never reached (cancelled, timed out) -> keeps its `not_scraped` row
+- batch threw -> keeps `not_scraped`; billed, but produced no data
+- batch returned, no profile for this handle -> `scrape_missing`
+
+The information was available at the point of attribution; the batch loop knew
+which handles it had covered and simply was not saying so.
+
+---
+
+## 11. `cacheOnly` overlaps `measured`
+
+**Where:** `lib/profileImportCore.ts` — `cacheOnly` is exactly the subset of
+`measured` where `decision === 'cache_only'`.
+
+**Why deferred:** `cacheOnly` predates `measured` and has a tested contract
+(its key set is asserted to be exactly handle/platform/followerCount, so the
+cache write cannot silently start depending on more). `measured` was added for
+the per-handle outcome write-back, which needs the status too. Removing
+`cacheOnly` now would drop that assertion.
+
+**Trigger:** if a third consumer of either appears. Until then the docstring on
+`MeasuredHandle` states the relationship, so it is explicit rather than
+accidental.
+
+---
+
+## 12. `mapTikTokProfile` reads two field names the actor does not emit
+
+**Where:** `lib/apify.ts`, `mapTikTokProfile`.
+
+**What:** `abe/tiktok-profile-scraper` emits `image` and `tagline`; the mapper
+reads `profileImage` and `displayName`. Neither exists, so both silently
+resolve to empty.
+
+Confirmed from stored data rather than a run — the same actor fed the old
+client-side path since the initial commit:
+
+| column | TikTok | Instagram |
+|---|---|---|
+| `follower_count > 0` | 3347 / 3347 (100%) | 97% |
+| `bio` | 3274 / 3347 (98%) | 96% |
+| `profile_pic_url` | **1 / 3347 (0%)** | 92% |
+| `creators.full_name` | **1 / 3458** | — |
+
+`platform_data.tagline` holds the display name that belongs in `full_name`
+("Kiara | Duval's Finest"), so the data was fetched and then dropped.
+
+**Fix:** two fallbacks, additive and safe since the current fields are always
+undefined:
+
+    fullName:      profile.displayName  || profile.tagline || ''
+    profilePicUrl: profile.profileImage || profile.image   || ''
+
+**Not done here** because C6/C7 are scoped to the conversion and this changes a
+mapper that `app/page.tsx` also uses. Worth doing before TikTok Discovery runs
+at any volume — otherwise every imported TikTok creator arrives with no avatar
+and no name. Backfilling existing rows is separate again, and possible without
+re-scraping for `full_name` (it is in `platform_data.tagline`) but not for
+avatars.
+
+**Also note:** this actor bills $0.005 per profile against the Instagram
+scraper's $0.0026, so `estimateDiscoveryCost` understates TikTok runs by
+roughly 2x. `PROFILE_RESULT_USD` is a single constant with no platform
+dimension.
