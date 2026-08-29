@@ -491,3 +491,67 @@ fields. That is a wider refactor than a two-fix commit should carry.
 
 **Trigger:** any other reason to touch DiscoveredCreator's shape, or the first
 time someone reads a Discovery result as "this creator has posted nothing".
+
+---
+
+## 18. Turbopack infers the workspace root from a stray home-directory lockfile
+
+**Symptom:** `next build` prints
+
+    Warning: Next.js inferred your workspace root, but it may not be correct.
+    We detected multiple lockfiles and selected the directory of
+    /Users/lukaslanger/package-lock.json as the root directory.
+
+Next walks up looking for lockfiles, and a `package.json` +
+`package-lock.json` sitting in the developer's home directory (dated 30 March,
+containing only a `@supabase/supabase-js` dependency) outranks this project's
+own. Root affects module resolution and output file tracing.
+
+**Attempted and reverted.** Setting `turbopack.root` to
+`path.resolve(import.meta.dirname)` silenced the warning and the production
+build passed — but `next dev` then failed to resolve `tailwindcss`, reporting it
+was looking in `/Users/lukaslanger` using that stray `package.json` as the
+description file.
+
+The config itself was NOT at fault: logging showed `import.meta.dirname`
+evaluating to `/Users/lukaslanger/inf-scraper` under the config loader, exactly
+as intended. The most likely cause was a `.next` directory holding both
+production and dev artifacts (see item 19), and the interaction could not be
+cleanly reproduced afterwards. Reverted rather than kept on suspicion: the
+benefit is a cosmetic warning, and the cost was a dev server that would not
+serve a page.
+
+**Do not simply re-apply it.** If the warning becomes worth fixing:
+
+1. Delete the stray `/Users/lukaslanger/package.json` and `package-lock.json` if
+   nothing uses them — that removes the cause rather than overriding it, and is
+   the cleanest fix. It is outside the repo, so it is the developer's call.
+2. Or re-apply `turbopack.root` and verify with `next dev` serving an actual
+   page, on a freshly cleared `.next` — not with `next build` alone.
+
+**The verification gap is the real lesson.** G1 was verified with
+`npx next build` only. A passing production build is not evidence that the dev
+server works; the two use different resolution paths and, worse, share `.next`.
+
+---
+
+## 19. `next build` and `next dev` share `.next` and interfere
+
+**What happened:** the commit sequence was verified by running `npx next build`
+after each change. That writes production artifacts into `.next`. Starting
+`next dev` afterwards leaves the directory holding both — production
+`server/`, `static/` and `required-server-files.json` beside a dev `dev/` and
+`turbopack/` cache — which produced module-resolution failures that looked like
+a config bug (item 18).
+
+**Rule going forward:**
+
+- Run `npx next build` for verification in a **separate git worktree** with
+  `node_modules` symlinked, so the working project's `.next` is never touched.
+- Or, if building in place, `rm -rf .next` before starting `next dev`.
+- Never run `next build` while a `next dev` server is running against the same
+  directory.
+
+**Trigger:** none — this is a process rule, not a code change. It is recorded
+because the failure it causes is misattributed to whatever config changed most
+recently, which is exactly what happened here.
