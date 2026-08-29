@@ -25,10 +25,22 @@ export async function POST(request: NextRequest) {
     const mode: 'niche' | 'sponsorship' =
       body.mode === 'sponsorship' ? 'sponsorship' : 'niche';
 
+    // Keyword search is verified on Instagram niche runs only. Anything else is
+    // forced back to hashtags here as well as in the UI, so a stray request
+    // cannot route a term down an unverified path.
+    const searchSource: 'hashtag' | 'keyword' =
+      body.searchSource === 'keyword' && mode === 'niche' && body.platform !== 'tiktok'
+        ? 'keyword'
+        : 'hashtag';
+
     const hashtags: string[] = Array.isArray(body.hashtags)
       ? ([...new Set(
           body.hashtags
-            .map((h: unknown) => String(h ?? '').trim().toLowerCase().replace(/^#/, ''))
+            // Keywords keep their spaces; only tags get the leading # stripped.
+            .map((h: unknown) => {
+              const raw = String(h ?? '').trim().toLowerCase();
+              return searchSource === 'keyword' ? raw : raw.replace(/^#/, '');
+            })
             .filter(Boolean),
         )] as string[])
       : [];
@@ -54,6 +66,7 @@ export async function POST(request: NextRequest) {
         // sent it, so all 62 historical rows read NULL and sponsorship runs
         // are indistinguishable from niche ones in the log.
         discovery_mode: mode,
+        search_source: searchSource,
         results_per_hashtag: resultsPerHashtag,
         min_followers: range.min,
         max_followers: range.max,
@@ -76,9 +89,10 @@ export async function POST(request: NextRequest) {
       runId: data.id,
       platform,
       mode,
+      searchSource,
       range,
       resultsPerHashtag,
-      items: hashtags.map(hashtag => ({ hashtag, platform })),
+      items: hashtags.map(hashtag => ({ hashtag, platform, searchSource })),
       count: hashtags.length,
     });
   } catch (error: unknown) {

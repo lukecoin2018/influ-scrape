@@ -15,8 +15,12 @@
 export interface HashtagResult {
   hashtag: string;
   platform: string;
+  searchSource?: 'hashtag' | 'keyword';
   cancelled: boolean;
   timedOut: boolean;
+  /** Posts came back but no author handle could be read from any of them. */
+  extractionFailed?: boolean;
+  extractionError?: string;
   postsFound: number;
   candidatesFound: number;
   entityExcluded: number;
@@ -64,11 +68,38 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
   };
 
   const saved = totals.entity + totals.known + totals.cached;
+  const broken = results.filter(r => r.extractionFailed);
+  const isKeyword = results.some(r => r.searchSource === 'keyword');
+  const termWord = isKeyword ? 'keyword' : 'hashtag';
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+      {/* A term that returned posts but no handles is a scraper-shape failure,
+          not a term nobody posted under. It must not read as an empty result. */}
+      {broken.length > 0 && (
+        <div className="px-6 py-4 bg-red-50 border-b border-red-200">
+          <p className="font-semibold text-red-800">
+            {broken.length} {termWord}
+            {broken.length === 1 ? '' : 's'} returned posts but no creators — extraction failed
+          </p>
+          <p className="text-sm text-red-700 mt-1">
+            This is not &ldquo;no creators found&rdquo;. The scraper returned posts whose author
+            field could not be read, so nothing was scraped and nothing was charged beyond the
+            search itself.
+          </p>
+          <ul className="mt-2 space-y-1 text-sm text-red-700">
+            {broken.map(r => (
+              <li key={r.hashtag}>
+                <span className="font-medium">{isKeyword ? '' : '#'}{r.hashtag}</span>
+                {' — '}{r.extractionError}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="px-6 py-4 border-b border-slate-200">
-        <h3 className="font-semibold text-slate-900">Per-hashtag funnel</h3>
+        <h3 className="font-semibold text-slate-900">Per-{termWord} funnel</h3>
         <p className="text-sm text-slate-500 mt-1">
           {saved.toLocaleString()} of {totals.candidates.toLocaleString()} candidates filtered
           before any profile scrape — entity-excluded, already known, or previously measured
@@ -80,7 +111,9 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
         <table className="w-full text-sm">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="px-3 py-2 text-left font-medium text-slate-600">Hashtag</th>
+              <th className="px-3 py-2 text-left font-medium text-slate-600">
+                {isKeyword ? 'Keyword' : 'Hashtag'}
+              </th>
               <th className={head}>Posts</th>
               <th className={head}>Candidates</th>
               <th className={head} title="Classified as a non-creator. Free.">Entity</th>
@@ -96,9 +129,15 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
           </thead>
           <tbody>
             {results.map(r => (
-              <tr key={r.hashtag} className="border-b border-slate-100">
+              <tr
+                key={r.hashtag}
+                className={`border-b border-slate-100 ${r.extractionFailed ? 'bg-red-50' : ''}`}
+              >
                 <td className="px-3 py-2 font-medium text-slate-900">
-                  #{r.hashtag}
+                  {r.searchSource === 'keyword' ? '' : '#'}{r.hashtag}
+                  {r.extractionFailed && (
+                    <span className="ml-2 text-xs font-semibold text-red-700">extraction failed</span>
+                  )}
                   {r.cancelled && <span className="ml-2 text-xs text-amber-600">stopped</span>}
                   {r.timedOut && <span className="ml-2 text-xs text-amber-600">timed out</span>}
                 </td>

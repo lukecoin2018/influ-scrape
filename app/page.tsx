@@ -131,12 +131,16 @@ export default function Home() {
 
   const processHashtag = useCallback(
     async (
-      item: { hashtag: string; runId: string; config: DiscoveryConfig; platform: Platform },
+      item: {
+        hashtag: string; runId: string; config: DiscoveryConfig;
+        platform: Platform; searchSource: DiscoveryConfig['searchSource'];
+      },
       _index: number,
       signal: AbortSignal,
       report: (message: string) => void,
     ): Promise<HashtagResult> => {
-      report(`#${item.hashtag} — scraping posts…`);
+      const label = item.searchSource === 'keyword' ? item.hashtag : `#${item.hashtag}`;
+      report(`${label} — scraping posts…`);
 
       const res = await fetch('/api/discover/process', {
         method: 'POST',
@@ -148,6 +152,7 @@ export default function Home() {
           runId: item.runId,
           hashtag: item.hashtag,
           platform: item.platform,
+          searchSource: item.searchSource,
           resultsPerHashtag: item.config.resultsPerHashtag,
           minFollowers: item.config.minFollowers,
           maxFollowers: item.config.maxFollowers,
@@ -162,7 +167,10 @@ export default function Home() {
   );
 
   const runner = useChunkedRunner<
-    { hashtag: string; runId: string; config: DiscoveryConfig; platform: Platform },
+    {
+      hashtag: string; runId: string; config: DiscoveryConfig;
+      platform: Platform; searchSource: DiscoveryConfig['searchSource'];
+    },
     HashtagResult
   >({
     // One hashtag at a time: each is already several Apify runs, so there is
@@ -170,7 +178,7 @@ export default function Home() {
     chunkSize: 1,
     delayMs: 1000,
     processItem: processHashtag,
-    labelFor: item => `#${item.hashtag}`,
+    labelFor: item => (item.searchSource === 'keyword' ? item.hashtag : `#${item.hashtag}`),
   });
 
   useEffect(() => {
@@ -199,6 +207,7 @@ export default function Home() {
           platform,
           mode: config.mode,
           hashtags: config.hashtags,
+          searchSource: config.searchSource,
           resultsPerHashtag: config.resultsPerHashtag,
           minFollowers: config.minFollowers,
           maxFollowers: config.maxFollowers,
@@ -215,6 +224,7 @@ export default function Home() {
           runId: data.runId,
           config,
           platform,
+          searchSource: data.searchSource ?? 'hashtag',
         })),
       );
 

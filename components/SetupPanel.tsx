@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { DiscoveryConfig, DiscoveryMode } from '@/lib/types';
+import type { DiscoveryConfig, DiscoveryMode, SearchSource } from '@/lib/types';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
 import { estimateDiscoveryCost } from '@/lib/discoveryCost';
 
@@ -42,6 +42,7 @@ interface SetupPanelProps {
 
 export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'instagram' }: SetupPanelProps) {
   const [mode, setMode] = useState<DiscoveryMode>('niche');
+  const [searchSource, setSearchSource] = useState<SearchSource>('hashtag');
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
   const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
@@ -75,6 +76,10 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       maxFollowers,
       resultsPerHashtag,
       mode,
+      // Keyword search is niche-only and Instagram-only for now, so anything
+      // else is forced back to hashtags rather than silently sending a flag
+      // down a path it has not been verified on.
+      searchSource: mode === 'niche' && platform === 'instagram' ? searchSource : 'hashtag',
       nicheKeywords: keywordsArray
     });
   };
@@ -117,10 +122,54 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
         </div>
       </div>
 
-      {/* Hashtags */}
+      {/* Search source — niche + Instagram only */}
+      {mode === 'niche' && platform === 'instagram' && (
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-slate-700 mb-3">Search Source</label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setSearchSource('hashtag')}
+              disabled={isRunning}
+              className={`px-4 py-3 rounded-lg font-medium transition-all ${
+                searchSource === 'hashtag'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <div className="text-sm"># Hashtag</div>
+              <div className="text-xs opacity-80 mt-1">Posts carrying the tag</div>
+            </button>
+            <button
+              onClick={() => setSearchSource('keyword')}
+              disabled={isRunning}
+              className={`px-4 py-3 rounded-lg font-medium transition-all ${
+                searchSource === 'keyword'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <div className="text-sm">🔎 Keyword</div>
+              <div className="text-xs opacity-80 mt-1">Free text, multi-word</div>
+            </button>
+          </div>
+          {searchSource === 'keyword' && (
+            <p className="text-xs text-slate-500 mt-2">
+              Multi-word terms are supported. Instagram returns a slightly different dataset for
+              keywords than for hashtags, so a term that finds posts but no creators is reported
+              as an error rather than as an empty result.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Search terms */}
       <div className="mb-6">
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          {mode === 'sponsorship' ? 'Sponsorship Hashtags (comma-separated)' : 'Hashtags (comma-separated)'}
+          {mode === 'sponsorship'
+            ? 'Sponsorship Hashtags (comma-separated)'
+            : searchSource === 'keyword' && platform === 'instagram'
+              ? 'Keywords (comma-separated)'
+              : 'Hashtags (comma-separated)'}
         </label>
         <textarea
           value={hashtags}
@@ -128,9 +177,18 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
           disabled={isRunning}
           rows={3}
           className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-500"
-          placeholder="e.g., fashionblogger, streetstyle, ootd"
+          placeholder={
+            searchSource === 'keyword' && mode === 'niche' && platform === 'instagram'
+              ? 'e.g., sustainable fashion, vintage denim'
+              : 'e.g., fashionblogger, streetstyle, ootd'
+          }
         />
-        <p className="text-sm text-slate-500 mt-2">{hashtags.split(',').filter(h => h.trim()).length} hashtags</p>
+        <p className="text-sm text-slate-500 mt-2">
+          {hashtags.split(',').filter(h => h.trim()).length}{' '}
+          {searchSource === 'keyword' && mode === 'niche' && platform === 'instagram'
+            ? 'keywords'
+            : 'hashtags'}
+        </p>
       </div>
 
       {/* Niche Keywords (only in sponsorship mode) */}

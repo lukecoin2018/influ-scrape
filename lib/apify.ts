@@ -9,14 +9,24 @@ if (!APIFY_TOKEN) {
 
 export async function startHashtagScraper(
   hashtags: string[],
-  resultsLimit: number = 100
+  resultsLimit: number = 100,
+  keywordSearch: boolean = false
 ): Promise<{ runId: string; datasetId?: string }> {
   const actorId = 'apify~instagram-hashtag-scraper';
+
+  // The actor declares exactly four inputs: hashtags, keywordSearch,
+  // resultsType, resultsLimit. `searchType` was being sent and is not among
+  // them — presumably ignored since the initial commit. Dropped rather than
+  // left beside a flag whose effect we are trying to observe.
   const input = {
     hashtags,
     resultsLimit,
-    searchType: 'hashtag',
     resultsType: 'posts',
+    // Same field, different meaning: with this set the entries are treated as
+    // free-text keywords rather than tags. The actor's own documentation warns
+    // the resulting dataset is "slightly different" from the hashtag one, which
+    // is why the route checks that author handles actually came back.
+    keywordSearch,
   };
 
   

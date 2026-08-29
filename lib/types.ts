@@ -1,5 +1,15 @@
+/**
+ * What the search terms ARE, as against what the run is FOR.
+ *
+ * Orthogonal to DiscoveryMode: a niche run can search hashtags or keywords, and
+ * so could a sponsorship one. Folding this into discovery_mode would lose one
+ * of the two dimensions.
+ */
+export type SearchSource = 'hashtag' | 'keyword';
+
 export interface DiscoveryConfig {
   hashtags: string[];
+  searchSource: SearchSource;
   minFollowers: number;
   maxFollowers: number;
   resultsPerHashtag: number;

@@ -83,8 +83,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
 
     const runId = typeof body.runId === 'string' ? body.runId : '';
-    const hashtag = String(body.hashtag ?? '').trim().toLowerCase().replace(/^#/, '');
+    // A keyword may legitimately contain spaces; only a tag gets # stripped.
+    const rawTerm = String(body.hashtag ?? '').trim().toLowerCase();
+    const hashtag = body.searchSource === 'keyword' ? rawTerm : rawTerm.replace(/^#/, '');
     const platform: 'instagram' | 'tiktok' = body.platform === 'tiktok' ? 'tiktok' : 'instagram';
+    const searchSource: 'hashtag' | 'keyword' =
+      body.searchSource === 'keyword' && platform === 'instagram' ? 'keyword' : 'hashtag';
     const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
 
@@ -98,8 +102,8 @@ export async function POST(request: NextRequest) {
     // ── Cancellation check A: nothing spent yet ────────────────────────────
     if (request.signal?.aborted) {
       return NextResponse.json({
-        hashtag, platform, cancelled: true, timedOut: false,
-        postsFound: 0, ...empty, imported: null,
+        hashtag, platform, searchSource, cancelled: true, timedOut: false,
+        postsFound: 0, ...empty, imported: null, extractionFailed: false,
         durationMs: Date.now() - startedAt,
       });
     }
@@ -107,7 +111,7 @@ export async function POST(request: NextRequest) {
     // ── 1. Hashtag / keyword scrape ────────────────────────────────────────
     const { runId: scrapeRunId } = platform === 'tiktok'
       ? await startTikTokHashtagScraper([hashtag], resultsPerHashtag)
-      : await startHashtagScraper([hashtag], resultsPerHashtag);
+      : await startHashtagScraper([hashtag], resultsPerHashtag, searchSource === 'keyword');
 
     // Bounded by what remains of the budget, so a slow actor cannot consume
     // the whole request and leave nothing for the profile phase.
@@ -118,6 +122,41 @@ export async function POST(request: NextRequest) {
 
     const posts = await getDatasetItems<unknown>(datasetId, resultsPerHashtag);
     const candidates = extractAuthorHandles(posts, platform);
+
+    // Posts came back and not one of them yielded an author handle.
+    //
+    // extractAuthorHandles reads ownerUsername for Instagram, and returns an
+    // empty array rather than throwing when the field is absent — which is
+    // indistinguishable, downstream, from a term nobody posted under. The two
+    // must not look alike: one is a term with no reach, the other is the
+    // scraper's output shape having changed underneath us. Instagram's own
+    // documentation warns the keyword dataset differs from the hashtag one, so
+    // this is the specific failure keyword search was expected to risk.
+    //
+    // Reported rather than thrown: the scrape is already paid for, and the post
+    // count is the diagnostic that says which of the two happened. Throwing
+    // would discard it.
+    if (posts.length > 0 && candidates.length === 0) {
+      await touchRun(runId);
+      return NextResponse.json({
+        hashtag,
+        platform,
+        searchSource,
+        cancelled: false,
+        timedOut: false,
+        extractionFailed: true,
+        extractionError:
+          `${posts.length} posts returned but no author handle could be read from any of them. ` +
+          `Expected ownerUsername on each ${platform} post` +
+          (searchSource === 'keyword'
+            ? '; Instagram\'s keyword dataset differs from its hashtag dataset, so the field may be named differently or absent.'
+            : '.'),
+        postsFound: posts.length,
+        ...empty,
+        imported: null,
+        durationMs: Date.now() - startedAt,
+      });
+    }
 
     // ── 2. Free filters, before any profile scrape ─────────────────────────
     const [entityExcluded, known, cached] = await Promise.all([
@@ -174,10 +213,11 @@ export async function POST(request: NextRequest) {
     if (request.signal?.aborted || outOfBudget) {
       await touchRun(runId);
       return NextResponse.json({
-        hashtag, platform,
+        hashtag, platform, searchSource,
         cancelled: request.signal?.aborted === true,
         timedOut: !request.signal?.aborted && outOfBudget,
         postsFound: posts.length, ...funnel, imported: null,
+        extractionFailed: false,
         durationMs: Date.now() - startedAt,
       });
     }
@@ -226,6 +266,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       hashtag,
       platform,
+      searchSource,
+      extractionFailed: false,
       cancelled: imported.cancelled,
       timedOut: imported.timedOut,
       postsFound: posts.length,
