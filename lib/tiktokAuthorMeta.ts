@@ -32,7 +32,7 @@ export interface SearchAuthorMeta {
 }
 
 export interface AuthorMetaCoverage {
-  /** Items that yielded a handle at all. The denominator. */
+  /** Distinct authors that yielded a handle at all. The denominator. */
   items: number;
   withFollowerCount: number;
   withSignature: number;
@@ -40,6 +40,32 @@ export interface AuthorMetaCoverage {
   withVerified: number;
   /** withFollowerCount / items, 0 when there are no items. */
   followerCountRate: number;
+
+  // ── Item-level diagnostics ────────────────────────────────────────────────
+  //
+  // Partial coverage has two very different causes and the author-level
+  // percentage cannot tell them apart:
+  //
+  //   authorMeta absent on some POSTS      -> rawWithAuthorMeta < rawItems
+  //   authorMeta present but fans missing  -> rawWithAuthorMeta == rawItems
+  //                                           and rawWithFans < that
+  //
+  // The first points at a class of item the actor treats differently — ads and
+  // photo-mode posts are the candidates. The second points at the field itself
+  // being conditional. They call for different responses, so they are counted
+  // separately rather than collapsed into one rate.
+  /** Posts inspected. */
+  rawItems: number;
+  /** Posts carrying an authorMeta object at all. */
+  rawWithAuthorMeta: number;
+  /** Posts carrying authorMeta.fans specifically. */
+  rawWithFans: number;
+  /** Posts flagged isAd — a candidate explanation for a missing authorMeta. */
+  rawAds: number;
+  /** Ads that DID carry a follower count. */
+  rawAdsWithFans: number;
+  /** Posts whose author is flagged private — another candidate explanation. */
+  rawPrivateAuthors: number;
 }
 
 function num(value: unknown): number | null {
@@ -106,9 +132,33 @@ export function extractAuthorMeta(posts: unknown[]): Map<string, SearchAuthorMet
 
 export function summariseAuthorMetaCoverage(
   metas: Map<string, SearchAuthorMeta>,
+  posts: unknown[] = [],
 ): AuthorMetaCoverage {
   const all = [...metas.values()];
   const withFollowerCount = all.filter(m => m.followerCount !== null).length;
+
+  let rawWithAuthorMeta = 0;
+  let rawWithFans = 0;
+  let rawAds = 0;
+  let rawAdsWithFans = 0;
+  let rawPrivateAuthors = 0;
+
+  for (const raw of posts) {
+    if (!raw || typeof raw !== 'object') continue;
+    const post = raw as Record<string, unknown>;
+    const meta = post.authorMeta as Record<string, unknown> | undefined;
+    const hasMeta = !!meta && typeof meta === 'object';
+    const hasFans = hasMeta && num(meta.fans) !== null;
+    const isAd = post.isAd === true;
+
+    if (hasMeta) rawWithAuthorMeta++;
+    if (hasFans) rawWithFans++;
+    if (isAd) {
+      rawAds++;
+      if (hasFans) rawAdsWithFans++;
+    }
+    if (hasMeta && meta.privateAccount === true) rawPrivateAuthors++;
+  }
 
   return {
     items: all.length,
@@ -117,6 +167,12 @@ export function summariseAuthorMetaCoverage(
     withTtSeller: all.filter(m => m.ttSeller !== null).length,
     withVerified: all.filter(m => m.verified !== null).length,
     followerCountRate: all.length === 0 ? 0 : withFollowerCount / all.length,
+    rawItems: posts.length,
+    rawWithAuthorMeta,
+    rawWithFans,
+    rawAds,
+    rawAdsWithFans,
+    rawPrivateAuthors,
   };
 }
 
@@ -131,7 +187,17 @@ export function summariseAuthorMetaCoverage(
  */
 export const MIN_FOLLOWER_COVERAGE = 0.5;
 
-export function shouldHaltOnCoverage(coverage: AuthorMetaCoverage): boolean {
+export function shouldHaltOnCoverage(
+  coverage: AuthorMetaCoverage,
+  /**
+   * Off for a deliberate probe: at 50 results the run costs about the same
+   * either way, and a partial figure like 40% is information a halt message
+   * would withhold. On for everything else, where the fallback would silently
+   * cost the difference between filtering and not.
+   */
+  enabled: boolean = true,
+): boolean {
+  if (!enabled) return false;
   if (coverage.items === 0) return false; // nothing extracted; a different failure
   return coverage.followerCountRate < MIN_FOLLOWER_COVERAGE;
 }

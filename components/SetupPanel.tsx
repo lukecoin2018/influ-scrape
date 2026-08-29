@@ -43,6 +43,7 @@ interface SetupPanelProps {
 export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'instagram' }: SetupPanelProps) {
   const [mode, setMode] = useState<DiscoveryMode>('niche');
   const [searchSource, setSearchSource] = useState<SearchSource>('hashtag');
+  const [haltOnLowCoverage, setHaltOnLowCoverage] = useState(true);
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
   const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
@@ -80,6 +81,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       // else is forced back to hashtags rather than silently sending a flag
       // down a path it has not been verified on.
       searchSource: mode === 'niche' ? searchSource : 'hashtag',
+      haltOnLowCoverage,
       nicheKeywords: keywordsArray
     });
   };
@@ -163,6 +165,33 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
               as an error rather than as an empty result.
             </p>
           )}
+        </div>
+      )}
+
+      {/* The free follower reading is the whole economic case for TikTok
+          search. Halting when it is absent stops a silent fallback to scraping
+          every author; turning that off is how you measure it once. */}
+      {platform === 'tiktok' && (
+        <div className="mb-6">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={haltOnLowCoverage}
+              onChange={e => setHaltOnLowCoverage(e.target.checked)}
+              disabled={isRunning}
+              className="mt-1 h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-700">
+                Halt if the search results carry no follower count
+              </span>
+              <span className="block text-xs text-slate-500 mt-1">
+                On by default. Without a follower count on the search item, every author needs a
+                paid profile scrape to find out — roughly $0.75 a term instead of $0.08. Turn it
+                off only to measure coverage on a deliberately small probe.
+              </span>
+            </span>
+          </label>
         </div>
       )}
 

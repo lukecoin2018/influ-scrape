@@ -31,6 +31,12 @@ export interface HashtagResult {
     withTtSeller: number;
     withVerified: number;
     followerCountRate: number;
+    rawItems: number;
+    rawWithAuthorMeta: number;
+    rawWithFans: number;
+    rawAds: number;
+    rawAdsWithFans: number;
+    rawPrivateAuthors: number;
   };
   importedSamples?: {
     handle: string;
@@ -151,6 +157,34 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
             A follower count on the search item is what lets the band be applied before paying for
             a profile scrape. Bio and shop-seller flag are recorded but filtered on by nothing yet.
           </p>
+
+          {/* Partial coverage has two causes and the percentage above cannot
+              tell them apart. These counts can. */}
+          {coverage.followerCountRate > 0 && coverage.followerCountRate < 1 && (
+            <div className="mt-3 pt-3 border-t border-slate-200 text-xs text-slate-600">
+              <p className="font-medium text-slate-800 mb-1">
+                Coverage is partial — which of these two is it?
+              </p>
+              <p>
+                <span className="font-mono">{coverage.rawWithAuthorMeta}</span> of{' '}
+                <span className="font-mono">{coverage.rawItems}</span> posts carried an authorMeta
+                object at all;{' '}
+                <span className="font-mono">{coverage.rawWithFans}</span> carried a follower count.
+              </p>
+              <p className="mt-1">
+                {coverage.rawWithAuthorMeta < coverage.rawItems
+                  ? 'authorMeta is ABSENT on some posts — a class of item the actor treats differently.'
+                  : 'authorMeta is present on every post but the follower count is conditional.'}
+              </p>
+              <p className="mt-1">
+                Ads: <span className="font-mono">{coverage.rawAds}</span>
+                {coverage.rawAds > 0 && (
+                  <> , of which <span className="font-mono">{coverage.rawAdsWithFans}</span> carried a count</>
+                )}
+                {' · '}private authors: <span className="font-mono">{coverage.rawPrivateAuthors}</span>
+              </p>
+            </div>
+          )}
         </div>
       )}
 

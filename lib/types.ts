@@ -10,6 +10,13 @@ export type SearchSource = 'hashtag' | 'keyword';
 export interface DiscoveryConfig {
   hashtags: string[];
   searchSource: SearchSource;
+  /**
+   * Stop a TikTok term when the search item does not carry a follower count.
+   *
+   * On by default. Turned off for a deliberate probe, where seeing the actual
+   * coverage figure is worth more than the spend a halt would save.
+   */
+  haltOnLowCoverage: boolean;
   minFollowers: number;
   maxFollowers: number;
   resultsPerHashtag: number;

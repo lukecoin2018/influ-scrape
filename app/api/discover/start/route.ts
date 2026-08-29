@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
 
     const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
+    const haltOnLowCoverage = body.haltOnLowCoverage !== false;
     const now = new Date().toISOString();
 
     const { data, error } = await supabase

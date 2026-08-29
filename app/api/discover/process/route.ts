@@ -104,6 +104,12 @@ export async function POST(request: NextRequest) {
     const dateFilter = typeof body.dateFilter === 'string' && body.dateFilter
       ? body.dateFilter
       : undefined;
+    /**
+     * Halt when the free follower reading is mostly absent. Default ON; a
+     * deliberate probe turns it off to see the actual coverage figure rather
+     * than a halt message.
+     */
+    const haltOnLowCoverage = body.haltOnLowCoverage !== false;
     const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
 
@@ -145,8 +151,12 @@ export async function POST(request: NextRequest) {
     // Author metadata carried on the search item itself. TikTok only; Instagram
     // posts carry nothing about the account behind them.
     const authorMeta = platform === 'tiktok' ? extractAuthorMeta(posts) : new Map();
-    const coverage = summariseAuthorMetaCoverage(authorMeta);
-    const usePreScrapeFilter = platform === 'tiktok' && !shouldHaltOnCoverage(coverage);
+    const coverage = summariseAuthorMetaCoverage(authorMeta, posts);
+    const halting = platform === 'tiktok' && shouldHaltOnCoverage(coverage, haltOnLowCoverage);
+    // With the halt off and coverage partial, the filter still applies to the
+    // authors that DID carry a reading. The rest fall through to a profile
+    // scrape, which is the pre-halt behaviour and is what makes the probe safe.
+    const usePreScrapeFilter = platform === 'tiktok';
 
     // Posts came back and not one of them yielded an author handle.
     //
@@ -190,7 +200,7 @@ export async function POST(request: NextRequest) {
     // roughly 150 per term at $0.005 against a handful when the filter works.
     // That is a different actor's economics, and nobody chose them. Stopping
     // costs one search; falling back costs the difference, silently, on a bill.
-    if (platform === 'tiktok' && shouldHaltOnCoverage(coverage)) {
+    if (halting) {
       await touchRun(runId);
       return NextResponse.json({
         hashtag, platform, searchSource,
@@ -201,7 +211,8 @@ export async function POST(request: NextRequest) {
           `${coverage.items} authors (${(coverage.followerCountRate * 100).toFixed(0)}%), ` +
           `below the ${(MIN_FOLLOWER_COVERAGE * 100).toFixed(0)}% needed to filter before ` +
           `scraping. Halted rather than scraping every author, which would cost about ` +
-          `$${(coverage.items * 0.005).toFixed(2)} for this term alone.`,
+          `$${(coverage.items * 0.005).toFixed(2)} for this term alone. ` +
+          `Re-run with the halt disabled to see the coverage breakdown instead.`,
         authorMetaCoverage: coverage,
         postsFound: posts.length,
         ...empty,

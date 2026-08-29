@@ -136,3 +136,70 @@ test('FF1: halting is what stops apidojo economics being adopted by accident', (
   assert.equal(shouldHaltOnCoverage(c), true);
   assert.equal(Number((c.items * 0.005).toFixed(2)), 0.75, 'the spend the halt avoids');
 });
+
+// ── GG1: the halt is configurable ─────────────────────────────────────────────
+
+test('GG1: the halt can be disabled for a deliberate probe', () => {
+  const none = summariseAuthorMetaCoverage(extractAuthorMeta([
+    post({ name: 'aaa' }), post({ name: 'bbb' }),
+  ]));
+  assert.equal(shouldHaltOnCoverage(none), true, 'halts by default');
+  assert.equal(shouldHaltOnCoverage(none, false), false, 'and not when disabled');
+});
+
+test('GG1: disabling the halt does not change what coverage reports', () => {
+  const c = summariseAuthorMetaCoverage(extractAuthorMeta([
+    post({ name: 'aaa', fans: 1 }), post({ name: 'bbb' }),
+  ]));
+  assert.equal(c.followerCountRate, 0.5, 'the figure is the same either way');
+});
+
+// ── GG2: telling the two causes of partial coverage apart ─────────────────────
+
+test('GG2: authorMeta absent on some posts is distinguishable from fans absent', () => {
+  // Case A — the object is missing on some posts.
+  const a = summariseAuthorMetaCoverage(
+    extractAuthorMeta([post({ name: 'aaa', fans: 1 }), { text: 'no author' }]),
+    [post({ name: 'aaa', fans: 1 }), { text: 'no author' }],
+  );
+  assert.equal(a.rawItems, 2);
+  assert.equal(a.rawWithAuthorMeta, 1, 'one post had no authorMeta at all');
+  assert.equal(a.rawWithFans, 1);
+
+  // Case B — every post has the object, but not the field.
+  const bPosts = [post({ name: 'aaa', fans: 1 }), post({ name: 'bbb' })];
+  const b = summariseAuthorMetaCoverage(extractAuthorMeta(bPosts), bPosts);
+  assert.equal(b.rawWithAuthorMeta, 2, 'both posts had authorMeta');
+  assert.equal(b.rawWithFans, 1, 'only one had fans');
+
+  // Same author-level rate, different cause. That is the point.
+  assert.equal(a.followerCountRate, 1);
+  assert.equal(b.followerCountRate, 0.5);
+  assert.notEqual(a.rawWithAuthorMeta, b.rawWithAuthorMeta);
+});
+
+test('GG2: ads are counted separately, with whether they carried a count', () => {
+  const posts = [
+    { ...post({ name: 'aaa', fans: 100 }), isAd: false },
+    { ...post({ name: 'bbb' }), isAd: true },
+    { ...post({ name: 'ccc', fans: 200 }), isAd: true },
+  ];
+  const c = summariseAuthorMetaCoverage(extractAuthorMeta(posts), posts);
+  assert.equal(c.rawAds, 2);
+  assert.equal(c.rawAdsWithFans, 1, 'so "ads never carry fans" is testable, not assumed');
+});
+
+test('GG2: private authors are counted', () => {
+  const posts = [
+    post({ name: 'aaa', fans: 1, privateAccount: true }),
+    post({ name: 'bbb', fans: 2, privateAccount: false }),
+  ];
+  const c = summariseAuthorMetaCoverage(extractAuthorMeta(posts), posts);
+  assert.equal(c.rawPrivateAuthors, 1);
+});
+
+test('GG2: item-level counts are zero when no posts are passed', () => {
+  const c = summariseAuthorMetaCoverage(extractAuthorMeta([post({ name: 'aaa', fans: 1 })]));
+  assert.equal(c.rawItems, 0, 'author-level figures still work without them');
+  assert.equal(c.items, 1);
+});
