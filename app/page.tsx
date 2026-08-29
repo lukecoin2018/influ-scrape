@@ -841,7 +841,8 @@ const brandRunId = brandData.runId;
                 </div>
                 <div className="flex justify-between text-xs text-slate-500 mt-2">
                   <span>
-                    {runner.progress.done} of {runner.progress.total} hashtags
+                    {runner.progress.done} of {runner.progress.total}{' '}
+                    {discoveryConfig?.searchSource === 'keyword' ? 'keywords' : 'hashtags'}
                     {runner.progress.failed > 0 && ` · ${runner.progress.failed} failed`}
                   </span>
                   {runId && <span className="font-mono">run {runId.slice(0, 8)}</span>}

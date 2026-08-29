@@ -25,13 +25,16 @@ export async function POST(request: NextRequest) {
     const mode: 'niche' | 'sponsorship' =
       body.mode === 'sponsorship' ? 'sponsorship' : 'niche';
 
-    // Keyword search is verified on Instagram niche runs only. Anything else is
-    // forced back to hashtags here as well as in the UI, so a stray request
-    // cannot route a term down an unverified path.
+    // Keyword search runs on both platforms. Sponsorship mode is still
+    // hashtag-only, since its brand extraction has not been converted.
+    //
+    // This previously also excluded TikTok, left over from when keyword was
+    // Instagram-only. The UI offered the toggle, the request carried
+    // searchSource: 'keyword', and this silently rewrote it to 'hashtag' — so a
+    // run selected as a keyword search was recorded and executed as a hashtag
+    // one, with nothing anywhere saying so.
     const searchSource: 'hashtag' | 'keyword' =
-      body.searchSource === 'keyword' && mode === 'niche' && body.platform !== 'tiktok'
-        ? 'keyword'
-        : 'hashtag';
+      body.searchSource === 'keyword' && mode === 'niche' ? 'keyword' : 'hashtag';
 
     const hashtags: string[] = Array.isArray(body.hashtags)
       ? ([...new Set(

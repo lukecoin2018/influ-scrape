@@ -43,11 +43,11 @@ export async function POST(request: NextRequest) {
     //
     // Paged because a run can produce more candidate rows than one PostgREST
     // response returns, and a truncated read would silently under-count.
-    const candidateRows: { outcome: string }[] = [];
+    const candidateRows: { outcome: string; follower_count_source?: string | null }[] = [];
     for (let offset = 0; ; offset += 1000) {
       const { data, error } = await supabase
         .from('discovery_candidates')
-        .select('outcome')
+        .select('outcome, follower_count_source')
         .eq('run_id', runId)
         .range(offset, offset + 999);
 

@@ -23,24 +23,41 @@ import type { CandidateOutcome } from './discoveryCache';
 
 export interface RunTotals {
   uniqueHandlesFound: number;
+  /** Handles a profile scrape was paid for. */
   profilesScraped: number;
+  /** Handles resolved from the search item's author metadata, at no cost. */
+  resolvedFree: number;
   creatorsInRange: number;
   newCreatorsAdded: number;
   existingCreatorsUpdated: number;
 }
 
-/** Outcomes that mean a handle reached the profile scrape and was billed. */
+/**
+ * Outcomes that mean a handle reached the profile scrape and was billed.
+ *
+ * The two rejected_* values are deliberately NOT here. A candidate can reach
+ * them two ways: measured by a profile scrape (billed), or measured from the
+ * search item's own author metadata (free). Counting the outcome alone would
+ * report every free rejection as a paid scrape — on the first TikTok probe it
+ * reported 43 profiles scraped when 20 were, because 23 had been rejected for
+ * nothing. That inflates the one number the whole pre-scrape filter exists to
+ * bring down.
+ *
+ * follower_count_source is what separates them, so profilesScraped reads that
+ * rather than the outcome.
+ */
 const SCRAPED: CandidateOutcome[] = [
   'imported_active',
   'imported_archive_high',
   'imported_archive_low',
-  'rejected_below_floor',
-  'rejected_above_max',
   'unknown_size',
   'scrape_missing',
   // Billed: it was scraped and measured. The write is what failed.
   'import_failed',
 ];
+
+/** Rejected on a measurement, by either route. Billed only if scraped. */
+const REJECTED: CandidateOutcome[] = ['rejected_below_floor', 'rejected_above_max'];
 
 /** Outcomes that created a creator record. */
 const CREATED_RECORD: CandidateOutcome[] = [
@@ -53,6 +70,7 @@ const CREATED_RECORD: CandidateOutcome[] = [
 export const EMPTY_RUN_TOTALS: RunTotals = {
   uniqueHandlesFound: 0,
   profilesScraped: 0,
+  resolvedFree: 0,
   creatorsInRange: 0,
   newCreatorsAdded: 0,
   existingCreatorsUpdated: 0,
@@ -68,14 +86,22 @@ export const EMPTY_RUN_TOTALS: RunTotals = {
  * 154 rows stored.
  */
 export function totalsFromCandidates(
-  rows: { outcome: string }[],
+  rows: { outcome: string; follower_count_source?: string | null }[],
 ): RunTotals {
   const count = (set: CandidateOutcome[]) =>
     rows.filter(r => (set as string[]).includes(r.outcome)).length;
 
+  // A rejection is only a scrape if a scrape produced it. Rows written before
+  // follower_count_source existed have it null; those predate the pre-scrape
+  // filter entirely, so treating them as scraped is correct for them.
+  const rejected = rows.filter(r => (REJECTED as string[]).includes(r.outcome));
+  const rejectedByScrape = rejected.filter(r => r.follower_count_source !== 'search_item').length;
+  const rejectedFree = rejected.length - rejectedByScrape;
+
   return {
     uniqueHandlesFound: rows.length,
-    profilesScraped: count(SCRAPED),
+    profilesScraped: count(SCRAPED) + rejectedByScrape,
+    resolvedFree: rejectedFree,
     creatorsInRange: count(['imported_active']),
     newCreatorsAdded: count(CREATED_RECORD),
     existingCreatorsUpdated: count(['already_known']),

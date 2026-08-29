@@ -336,9 +336,20 @@ export async function POST(request: NextRequest) {
 
     // ── 5. Write measurements back ─────────────────────────────────────────
     // Upserts onto the not_scraped rows written in step 3.
-    const measuredRows: CandidateRow[] = imported.measured.map(m => ({
+    const measuredRows: CandidateRow[] = imported.measured.map(m => {
+      // Carried through explicitly. writeCandidates upserts on
+      // (run_id, platform, handle), so omitting these would overwrite the
+      // signals written before the scrape with nulls — which is what happened
+      // on the first TikTok probe: 29 candidates kept their bio and verified
+      // flag, and the 20 that went on to be scraped lost theirs.
+      const meta: SearchAuthorMeta | undefined = authorMeta.get(m.handle);
+      return {
       handle: m.handle,
       followerCount: m.followerCount,
+      authorFollowerCount: meta?.followerCount ?? null,
+      authorTtSeller: meta?.ttSeller ?? null,
+      authorSignature: meta?.signature ?? null,
+      authorVerified: meta?.verified ?? null,
       // Discovery archives nothing, so imported_archive_* are no longer
       // produced here; they remain in the taxonomy for the rows written before
       // this change. Direction is preserved in the cache because it decides
@@ -353,7 +364,8 @@ export async function POST(request: NextRequest) {
           : !m.saved ? 'import_failed'
           : m.status === 'active' ? 'imported_active'
           : 'unknown_size',
-    }));
+      };
+    });
 
     // Submitted, its batch returned, but the actor produced no profile for it —
     // private, deleted or renamed.
