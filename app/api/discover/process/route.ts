@@ -63,7 +63,7 @@ import {
  * fails the build with "Invalid segment configuration export detected". The
  * budget below reads it back, so this is still the single number to change.
  */
-export const maxDuration = 300;
+export const maxDuration = 900;
 
 /**
  * When to stop starting new work, leaving room to write results and respond.
