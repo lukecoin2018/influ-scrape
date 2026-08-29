@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { totalsFromCandidates } from '@/lib/discoveryRunTotals';
 
 /**
  * Closes a Discovery run.
@@ -30,13 +31,43 @@ export async function POST(request: NextRequest) {
 
     const status = body.status === 'cancelled' ? 'cancelled' : 'complete';
 
+    // Everything except the post count is DERIVED from discovery_candidates
+    // rather than taken from the request.
+    //
+    // The client used to supply all six. It read its per-item results out of a
+    // ref synced from React state by an effect, and called this route in the
+    // same async continuation in which the runner's loop resolved — before
+    // React had re-rendered — so the ref held a prefix and a two-term run
+    // reported one term's numbers as the whole run. Reading the log here means
+    // the counters cannot disagree with it whatever the client does.
+    //
+    // Paged because a run can produce more candidate rows than one PostgREST
+    // response returns, and a truncated read would silently under-count.
+    const candidateRows: { outcome: string }[] = [];
+    for (let offset = 0; ; offset += 1000) {
+      const { data, error } = await supabase
+        .from('discovery_candidates')
+        .select('outcome')
+        .eq('run_id', runId)
+        .range(offset, offset + 999);
+
+      if (error) throw new Error(`candidate read failed: ${error.message}`);
+      const page = data || [];
+      candidateRows.push(...page);
+      if (page.length < 1000) break;
+    }
+
+    const derived = totalsFromCandidates(candidateRows);
+
     const totals = {
+      // Posts are the scrape's input, not its output: a post yielding no
+      // candidate leaves no row, so this one still comes from the client.
       total_posts_found: Math.max(0, Number(body.totalPostsFound) || 0),
-      unique_handles_found: Math.max(0, Number(body.uniqueHandlesFound) || 0),
-      profiles_scraped: Math.max(0, Number(body.profilesScraped) || 0),
-      creators_in_range: Math.max(0, Number(body.creatorsInRange) || 0),
-      new_creators_added: Math.max(0, Number(body.newCreatorsAdded) || 0),
-      existing_creators_updated: Math.max(0, Number(body.existingCreatorsUpdated) || 0),
+      unique_handles_found: derived.uniqueHandlesFound,
+      profiles_scraped: derived.profilesScraped,
+      creators_in_range: derived.creatorsInRange,
+      new_creators_added: derived.newCreatorsAdded,
+      existing_creators_updated: derived.existingCreatorsUpdated,
     };
 
     const now = new Date().toISOString();

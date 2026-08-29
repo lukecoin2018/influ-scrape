@@ -10,6 +10,7 @@ import { detectBrandsInPost, filterPostsByNiche, createPartnershipRecords } from
 import { mapTikTokProfile } from '@/lib/apify';
 import { useChunkedRunner } from '@/lib/useChunkedRunner';
 import DiscoveryFunnel, { type HashtagResult } from '@/components/DiscoveryFunnel';
+import { sumPostsFound } from '@/lib/discoveryRunTotals';
 
 type Platform = 'instagram' | 'tiktok';
 
@@ -161,6 +162,12 @@ export default function Home() {
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // Accumulated HERE, synchronously, not read back from runner.results.
+      // That is React state, and finishRun runs in the same continuation in
+      // which the runner's loop resolves — before React re-renders — so a ref
+      // synced by an effect holds only a prefix of the run.
+      runnerResultsRef.current.push(data as HashtagResult);
       return data as HashtagResult;
     },
     [],
@@ -180,10 +187,6 @@ export default function Home() {
     processItem: processHashtag,
     labelFor: item => (item.searchSource === 'keyword' ? item.hashtag : `#${item.hashtag}`),
   });
-
-  useEffect(() => {
-    runnerResultsRef.current = runner.results;
-  }, [runner.results]);
 
   useEffect(() => {
     if (runner.status === 'stopped') runnerStoppedRef.current = true;
@@ -247,31 +250,25 @@ export default function Home() {
    * display. The full table is read from the database once, at the end.
    */
   const finishRun = async (id: string) => {
-    const rows = runnerResultsRef.current;
-    const totals = {
-      totalPostsFound: rows.reduce((n, r) => n + r.postsFound, 0),
-      uniqueHandlesFound: rows.reduce((n, r) => n + r.candidatesFound, 0),
-      profilesScraped: rows.reduce((n, r) => n + (r.imported?.attempted ?? 0), 0),
-      creatorsInRange: rows.reduce((n, r) => n + (r.imported?.inRange ?? 0), 0),
-      newCreatorsAdded: rows.reduce((n, r) => n + (r.imported?.saved ?? 0), 0),
-      existingCreatorsUpdated: rows.reduce((n, r) => n + r.alreadyKnown, 0),
-    };
-
+    // Only the post count is sent. Every other counter is derived from
+    // discovery_candidates by the route, so it cannot disagree with the log.
+    let creatorsInRange = 0;
     try {
-      await fetch('/api/discover/finish', {
+      const res = await fetch('/api/discover/finish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           runId: id,
           status: runnerStoppedRef.current ? 'cancelled' : 'complete',
-          ...totals,
+          totalPostsFound: sumPostsFound(runnerResultsRef.current),
         }),
       });
+      if (res.ok) creatorsInRange = (await res.json()).creators_in_range ?? 0;
     } catch (err) {
       console.error('Failed to close discovery run:', err);
     }
 
-    if (totals.creatorsInRange === 0) return;
+    if (creatorsInRange === 0) return;
 
     try {
       // Scoped to THIS run via discovery_candidates, not to the follower band.
