@@ -75,6 +75,20 @@ export interface MeasuredHandle {
   followerCount: number;
   status: ImportStatus;
   decision: ImportDecision;
+  /**
+   * Whether a creator record was actually written.
+   *
+   * True only when saveCreators confirmed this handle. A 'cache_only' decision
+   * is false by design — nothing was attempted for it.
+   *
+   * This exists because the outcome used to be recorded on INTENT: the handle
+   * was pushed here before saveCreators ran, so a save that failed for one
+   * creator still reported it as imported. saveDiscoveredCreators catches per
+   * creator and counts failures, so the funnel could report an import that
+   * never happened — and on a run whose whole purpose is reading the funnel,
+   * that is the worst possible place for a silent discrepancy.
+   */
+  saved: boolean;
 }
 
 export interface ImportOutcome {
@@ -234,6 +248,8 @@ export async function runProfileImport(
   const unknownSizeSamples: { handle: string; followerCount: number }[] = [];
   const cacheOnly: CacheOnlyEntry[] = [];
   const measured: MeasuredHandle[] = [];
+  // Per batch: handles whose save has been attempted but not yet confirmed.
+  const pending: MeasuredHandle[] = [];
   const scrapedHandles: string[] = [];
   const errors: string[] = [];
   let attempted = 0;
@@ -320,14 +336,22 @@ export async function runProfileImport(
       // Routing. A cache-only handle is still counted and still sampled above —
       // it was observed — but no creator record is written for it.
       const decision = policy(mapped, importStatus);
-      measured.push({
-        handle, platform, followerCount: mapped.followerCount, status: importStatus, decision,
-      });
 
       if (decision === 'cache_only') {
         cacheOnly.push({ handle, platform, followerCount: mapped.followerCount });
+        measured.push({
+          handle, platform, followerCount: mapped.followerCount,
+          status: importStatus, decision, saved: false,
+        });
         continue;
       }
+
+      // Held back until saveCreators confirms it. Recording it now would be
+      // recording an intention.
+      pending.push({
+        handle, platform, followerCount: mapped.followerCount,
+        status: importStatus, decision, saved: false,
+      });
 
       creators.push({
         handle,
@@ -355,6 +379,15 @@ export async function runProfileImport(
     saved += result.saved;
     failed += result.failed;
     errors.push(...result.errors);
+
+    // Reconcile intent against what was actually written. savedHandles is the
+    // list saveDiscoveredCreators confirmed; anything absent from it failed and
+    // must not be reported as imported.
+    const confirmed = new Set(result.savedHandles.map(h => norm(h)));
+    for (const entry of pending) {
+      measured.push({ ...entry, saved: confirmed.has(entry.handle) });
+    }
+    pending.length = 0;
 
     onProgress?.(attempted, handles.length);
   }

@@ -38,6 +38,8 @@ const SCRAPED: CandidateOutcome[] = [
   'rejected_above_max',
   'unknown_size',
   'scrape_missing',
+  // Billed: it was scraped and measured. The write is what failed.
+  'import_failed',
 ];
 
 /** Outcomes that created a creator record. */

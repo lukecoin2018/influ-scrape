@@ -90,3 +90,70 @@ and confirm the change set is precisely what was intended and nothing else. That
 check caught a `package.json` left at its first-commit state across seven
 commits during one rewrite, which would have broken `npm test` from the fourth
 onward while every commit still looked green.
+
+## Deletions in migrations
+
+**Every DELETE must be scoped to an explicit list of ids, and every DELETE must
+be preceded in the same file by a SELECT carrying the identical WHERE clause.**
+
+The reader runs the SELECT, sees exactly which rows match, and only then runs
+the DELETE. A file that does not let them do that is not reviewable.
+
+### The failure mode: a subquery that reads as scoped and is not
+
+This was written, reviewed, shipped and applied:
+
+```sql
+DELETE FROM social_profiles WHERE handle IN ( ...eleven handles... );
+
+DELETE FROM creators c
+WHERE NOT EXISTS (SELECT 1 FROM social_profiles sp        WHERE sp.creator_id = c.id)
+  AND NOT EXISTS (SELECT 1 FROM social_profiles_archive sp WHERE sp.creator_id = c.id);
+```
+
+The first statement is scoped. The second reads as "and now the creators those
+eleven left behind" and means "**every orphaned creator in the table**". There
+were roughly 121 pre-existing orphans. It deleted all of them — 120 from
+`creators`, 1 from `creators_archive` — when 11 and 4 were intended.
+
+The comment above it said "Then creators with no profile left beneath them",
+which describes the intent and not the statement. Prose cannot scope a query.
+
+### "I measured what it touched" means the statement was run as a SELECT
+
+It does not mean the intended target was counted. In the case above, eleven
+creator rows were listed, their foreign-key references checked, and the result
+reported as a complete impact assessment. What was never done was running the
+DELETE's own WHERE clause as a SELECT — which would have returned 121 rows and
+stopped the whole thing.
+
+Worse, the impact assessment checked three tables — `creator_posts`,
+`partnerships`, `creators` — when thirteen carry `creator_id`, including
+`negotiations`, `contracts`, `inquiries`, `shortlist_items`, `rate_calculations`
+and `creator_outreach`. Those turned out to be empty or unaffected, but that was
+luck, not diligence.
+
+**Before writing any DELETE, enumerate every table referencing the target**, by
+reading the schema rather than by recalling which ones came up earlier:
+
+```sql
+SELECT tc.table_name, kcu.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu   ON tc.constraint_name = kcu.constraint_name
+JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = '<target table>';
+```
+
+### Required shape
+
+```sql
+-- 1. SELECT with the exact WHERE clause of the DELETE below. Run this first.
+SELECT id, handle FROM creators WHERE id IN ('...', '...');
+
+-- 2. The DELETE, same WHERE clause, explicit ids only.
+DELETE FROM creators WHERE id IN ('...', '...');
+```
+
+No `NOT EXISTS`, no `NOT IN` over a whole table, no correlated subquery deciding
+scope. If the id list has to be computed, compute it with a SELECT, paste the
+result in, and delete by literal id.

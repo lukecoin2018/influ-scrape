@@ -561,3 +561,127 @@ test('K3: a genuinely missing profile IS reported, exactly', async () => {
   const missing = out.scrapedHandles.filter(h => !returned.has(h));
   assert.deepEqual(missing.sort(), ['h1', 'h3']);
 });
+
+// ── HH1/II2: outcomes reflect a confirmed save, not an intention ──────────────
+
+/** A save that succeeds for everything except the named handles. */
+function partialSaveSpy(failing: string[]) {
+  const calls: { creators: ImportableCreator[]; platform: string }[] = [];
+  const fn = async (creators: ImportableCreator[], platform: string): Promise<ImportResult> => {
+    calls.push({ creators: [...creators], platform });
+    const ok = creators.filter(c => !failing.includes(c.handle));
+    const bad = creators.filter(c => failing.includes(c.handle));
+    return {
+      saved: ok.length,
+      failed: bad.length,
+      total: creators.length,
+      savedHandles: ok.map(c => c.handle),
+      errors: bad.map(c => `${c.handle}: duplicate key`),
+    };
+  };
+  return { calls, fn };
+}
+
+test('II2: a handle whose save FAILS is not reported as imported', async () => {
+  const save = partialSaveSpy(['h3']);
+  const out = await runProfileImport(handles(6), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: save.fn,
+  });
+
+  const failed = out.measured.find(m => m.handle === 'h3');
+  assert.ok(failed, 'it is still measured — it was scraped and billed');
+  assert.equal(failed.saved, false, 'but NOT recorded as written');
+  assert.equal(failed.status, 'active', 'its measurement is unchanged');
+
+  for (const m of out.measured.filter(m => m.handle !== 'h3')) {
+    assert.equal(m.saved, true);
+  }
+  assert.equal(out.saved, 5);
+  assert.equal(out.failed, 1);
+});
+
+test('II2: saved counts and the measured list agree', async () => {
+  const save = partialSaveSpy(['h1', 'h4', 'h7']);
+  const out = await runProfileImport(handles(10), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: save.fn,
+  });
+
+  assert.equal(out.measured.filter(m => m.saved).length, out.saved);
+  assert.equal(out.measured.filter(m => !m.saved && m.decision === 'import').length, out.failed);
+});
+
+test('II2: a cache-only handle is saved:false by design, not by failure', async () => {
+  const save = saveSpy();
+  const out = await runProfileImport(handles(4), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    policy: () => 'cache_only',
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: save.fn,
+  });
+
+  assert.equal(out.measured.length, 4);
+  for (const m of out.measured) {
+    assert.equal(m.saved, false);
+    assert.equal(m.decision, 'cache_only', 'distinguishable from an import that failed');
+  }
+  assert.equal(out.cacheOnly.length, 4);
+  assert.equal(out.failed, 0, 'nothing was attempted, so nothing failed');
+});
+
+test('II2: reconciliation is per batch, so a later failure cannot unmark an earlier save', async () => {
+  const calls: string[][] = [];
+  const fn = async (creators: ImportableCreator[]): Promise<ImportResult> => {
+    calls.push(creators.map(c => c.handle));
+    // The second batch fails entirely.
+    const ok = calls.length === 2 ? [] : creators;
+    return {
+      saved: ok.length, failed: creators.length - ok.length, total: creators.length,
+      savedHandles: ok.map(c => c.handle), errors: [],
+    };
+  };
+
+  const out = await runProfileImport(handles(30), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 10,
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: fn,
+  });
+
+  assert.equal(calls.length, 3);
+  assert.equal(out.measured.filter(m => m.saved).length, 20, 'batches 1 and 3');
+  assert.equal(out.measured.filter(m => !m.saved).length, 10, 'batch 2');
+  assert.equal(out.saved, 20);
+});
+
+test('II2: every measured handle is reconciled — none left pending', async () => {
+  const save = partialSaveSpy(['h2']);
+  const out = await runProfileImport(handles(5), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    batchSize: 2,
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: save.fn,
+  });
+  assert.equal(out.measured.length, 5, 'nothing was dropped between batches');
+});
+
+test('II2: a handle the save silently omits is treated as failed, not imported', async () => {
+  // savedHandles shorter than the input, with no error reported. Trusting the
+  // count rather than the list would have called this a success.
+  const fn = async (creators: ImportableCreator[]): Promise<ImportResult> => ({
+    saved: creators.length, failed: 0, total: creators.length,
+    savedHandles: creators.slice(1).map(c => c.handle),
+    errors: [],
+  });
+
+  const out = await runProfileImport(handles(4), {
+    range: BAND, platform: 'instagram', discoveredViaHashtags: ['x'],
+    scrapeBatch: async batch => batch.map(h => igProfile(h, 100_000)),
+    saveCreators: fn,
+  });
+
+  assert.equal(out.measured.find(m => m.handle === 'h0')?.saved, false);
+});

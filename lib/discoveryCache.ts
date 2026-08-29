@@ -25,6 +25,7 @@ export const CANDIDATE_OUTCOMES = [
   'imported_archive_low',
   'rejected_below_floor',
   'rejected_above_max',
+  'import_failed',
   'unknown_size',
 ] as const;
 

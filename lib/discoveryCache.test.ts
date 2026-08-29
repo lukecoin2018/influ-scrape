@@ -18,14 +18,16 @@ const cached = (followerCount: number, days = 1): CachedMeasurement => ({
   platform: 'instagram', handle: 'h', followerCount, measuredAt: daysAgo(days),
 });
 
-test('the taxonomy matches the CHECK constraint — eleven values, no duplicates', () => {
-  // Ten originally; 'rejected_above_max' was added when Discovery stopped
-  // archiving out-of-range candidates in either direction. The two
-  // imported_archive_* values remain for rows written before that change.
-  assert.equal(CANDIDATE_OUTCOMES.length, 11);
-  assert.equal(new Set(CANDIDATE_OUTCOMES).size, 11, 'no duplicates');
+test('the taxonomy matches the CHECK constraint — twelve values, no duplicates', () => {
+  // Ten originally. 'rejected_above_max' was added when Discovery stopped
+  // archiving out-of-range candidates in either direction; 'import_failed' when
+  // outcomes stopped being recorded on intent. The two imported_archive_*
+  // values remain for rows written before the first of those changes.
+  assert.equal(CANDIDATE_OUTCOMES.length, 12);
+  assert.equal(new Set(CANDIDATE_OUTCOMES).size, 12, 'no duplicates');
   assert.ok(CANDIDATE_OUTCOMES.includes('rejected_above_max'));
   assert.ok(CANDIDATE_OUTCOMES.includes('rejected_below_floor'));
+  assert.ok(CANDIDATE_OUTCOMES.includes('import_failed'));
 });
 
 test('the TTL is 90 days, matching the enrichment staleDays default', () => {

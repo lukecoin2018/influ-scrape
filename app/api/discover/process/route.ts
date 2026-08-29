@@ -344,9 +344,13 @@ export async function POST(request: NextRequest) {
       // this change. Direction is preserved in the cache because it decides
       // re-admission: a below-min handle can grow into the band, an above-max
       // one only re-enters if the band's ceiling is raised.
+      // Reconciled against the save, not recorded on intent. A handle that was
+      // measured and attempted but not confirmed is 'import_failed' — billed,
+      // with a follower reading, and no creator record.
       outcome:
         m.decision === 'cache_only'
           ? (m.status === 'out_of_range_high' ? 'rejected_above_max' : 'rejected_below_floor')
+          : !m.saved ? 'import_failed'
           : m.status === 'active' ? 'imported_active'
           : 'unknown_size',
     }));
@@ -370,7 +374,7 @@ export async function POST(request: NextRequest) {
     // Country is NOT here: neither platform's profile payload carries it, and
     // it only appears after the intelligence pass.
     const importedSamples = imported.measured
-      .filter(m => m.status === 'active' && m.decision === 'import')
+      .filter(m => m.status === 'active' && m.decision === 'import' && m.saved)
       .slice(0, 15)
       .map(m => {
         const meta: SearchAuthorMeta | undefined = authorMeta.get(m.handle);
