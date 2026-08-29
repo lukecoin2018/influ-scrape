@@ -544,3 +544,58 @@ a config bug (item 18).
 **Trigger:** none — this is a process rule, not a code change. It is recorded
 because the failure it causes is misattributed to whatever config changed most
 recently, which is exactly what happened here.
+
+---
+
+## 20. 121 orphaned creator rows accumulated over six months
+
+**What:** `creators` rows with no `social_profiles` and no
+`social_profiles_archive` row beneath them. Roughly 121 existed before
+2026-08-29, when an unscoped DELETE removed them (see
+docs/incident-2026-08-29-unscoped-delete.md). Something creates them and nothing
+cleans them up.
+
+**Shape, from `creator_registry` first_seen_at dates:** they arrive in batches —
+18 on 25 Feb, 19 on 14 Mar, 11 on 24 Mar, 16 on 15 Jun, 14 on 3 Jul, 14 on
+14 Jul, 12 on 20 Jul. Batch arrival points at a bulk path failing partway rather
+than a steady trickle.
+
+**Hypothesis, from reading the code and NOT verified:**
+`lib/creatorImport.ts` inserts the `creators` row first, then writes the profile,
+and `continue`s if the profile write fails — leaving the creator behind with
+nothing beneath it. If that is the cause, the same path is still live.
+
+**Why it matters beyond tidiness:** `new_creators_added` counts creator rows, so
+it has been over-counting for however long this has been happening. Any yield
+figure derived from it is inflated.
+
+**Trigger:** after the TikTok keyword runs. Read-only investigation first —
+find the path, confirm the mechanism, and only then decide whether anything
+needs cleaning up. Given the incident, no deletion is proposed as part of it.
+
+---
+
+## 21. The C8/TikTok comparison confounds three variables
+
+C8 (Instagram, #fashionblogger + #streetstyle) yielded 11 in-band imports and
+zero usable creators: shops in Riyadh, Bishkek and Tashkent, five labelled
+Clothing (Brand) by Instagram itself.
+
+The first TikTok probe (#tryonhaul, as it turned out — see the silent-rewrite
+fix) yielded 20 that look like real creators: personal handles, personal names,
+English-language, in band.
+
+**Three things differ at once** and the runs cannot separate them:
+
+1. **Platform** — Instagram vs TikTok.
+2. **Term intent** — topic label (#fashionblogger) vs commercial intent
+   (#tryonhaul). The second describes what someone is DOING with a product.
+3. **Search mechanism** — both runs were in fact hashtag searches, so this one
+   did NOT vary, though it appeared to at the time.
+
+The commercial-intent hypothesis is the interesting one and is untested: a
+TikTok run on a topic label, or an Instagram run on a commercial-intent term,
+would isolate it. Worth knowing before concluding that the platform is what
+matters, because term choice is far cheaper to change than platform.
+
+**Trigger:** after the keyword-vs-hashtag comparison, which isolates variable 3.

@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { normaliseRange } from '@/lib/followerRange';
+import {
+  parseEnumParam,
+  parseBoundedInt,
+  parseBoolParam,
+  firstError,
+} from '@/lib/requestParams';
 
 /**
  * Opens a Discovery run and returns its queue of search terms.
@@ -20,21 +26,31 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
 
-    const platform: 'instagram' | 'tiktok' =
-      body.platform === 'tiktok' ? 'tiktok' : 'instagram';
-    const mode: 'niche' | 'sponsorship' =
-      body.mode === 'sponsorship' ? 'sponsorship' : 'niche';
+    // Honoured or rejected, never rewritten. A run started as a keyword search
+    // was once silently recorded and executed as a hashtag one because this
+    // guard carried a stale platform clause; nothing reported the change.
+    const platformP = parseEnumParam('platform', body.platform, ['instagram', 'tiktok'] as const, 'instagram');
+    const modeP = parseEnumParam('mode', body.mode, ['niche', 'sponsorship'] as const, 'niche');
+    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword'] as const, 'hashtag');
+    const haltP = parseBoolParam('haltOnLowCoverage', body.haltOnLowCoverage, true);
 
-    // Keyword search runs on both platforms. Sponsorship mode is still
-    // hashtag-only, since its brand extraction has not been converted.
-    //
-    // This previously also excluded TikTok, left over from when keyword was
-    // Instagram-only. The UI offered the toggle, the request carried
-    // searchSource: 'keyword', and this silently rewrote it to 'hashtag' — so a
-    // run selected as a keyword search was recorded and executed as a hashtag
-    // one, with nothing anywhere saying so.
-    const searchSource: 'hashtag' | 'keyword' =
-      body.searchSource === 'keyword' && mode === 'niche' ? 'keyword' : 'hashtag';
+    const paramError = firstError(platformP, modeP, sourceP, haltP);
+    if (paramError) return NextResponse.json({ error: paramError }, { status: 400 });
+
+    const platform = (platformP as { value: 'instagram' | 'tiktok' }).value;
+    const mode = (modeP as { value: 'niche' | 'sponsorship' }).value;
+    const requestedSource = (sourceP as { value: 'hashtag' | 'keyword' }).value;
+    const haltOnLowCoverage = (haltP as { value: boolean }).value;
+
+    // Sponsorship mode has no keyword path — its brand extraction is
+    // unconverted. Rejected rather than downgraded, so the caller learns.
+    if (requestedSource === 'keyword' && mode !== 'niche') {
+      return NextResponse.json(
+        { error: 'searchSource="keyword" is only supported in niche mode.' },
+        { status: 400 },
+      );
+    }
+    const searchSource = requestedSource;
 
     const hashtags: string[] = Array.isArray(body.hashtags)
       ? ([...new Set(
@@ -55,9 +71,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
+    const resultsP = parseBoundedInt('resultsPerHashtag', body.resultsPerHashtag,
+      { min: 1, max: 500, fallback: 100 });
+    if (!resultsP.ok) return NextResponse.json({ error: resultsP.error }, { status: 400 });
+    const resultsPerHashtag = resultsP.value;
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
-    const haltOnLowCoverage = body.haltOnLowCoverage !== false;
     const now = new Date().toISOString();
 
     const { data, error } = await supabase
@@ -96,6 +114,9 @@ export async function POST(request: NextRequest) {
       searchSource,
       range,
       resultsPerHashtag,
+      // Reported rather than applied in silence.
+      resultsClamped: resultsP.clamped === true,
+      resultsRequested: resultsP.requested ?? resultsPerHashtag,
       items: hashtags.map(hashtag => ({ hashtag, platform, searchSource })),
       count: hashtags.length,
     });

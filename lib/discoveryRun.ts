@@ -169,3 +169,44 @@ export async function touchRun(runId: string): Promise<void> {
 
   if (error) console.error(`Failed to touch run ${runId}:`, error.message);
 }
+
+/**
+ * Records one term's author-metadata coverage on its run.
+ *
+ * Keyed by term inside a jsonb object, because coverage describes what the
+ * actor returned for a particular query. One term returning nothing while three
+ * return everything is a different finding from all four returning three
+ * quarters.
+ *
+ * Read-modify-write, which is safe because the runner processes terms strictly
+ * one at a time (chunkSize 1). If that ever changes to run terms concurrently,
+ * this needs to become a jsonb merge in SQL — two terms finishing together
+ * would otherwise lose one of the two.
+ *
+ * Failure is logged, not thrown: losing a diagnostic must not fail a term whose
+ * scrape has already been paid for.
+ */
+export async function recordAuthorMetaCoverage(
+  runId: string,
+  term: string,
+  coverage: unknown,
+): Promise<void> {
+  const { data, error: readError } = await supabase
+    .from('discovery_runs')
+    .select('author_meta_coverage')
+    .eq('id', runId)
+    .maybeSingle();
+
+  if (readError) {
+    console.error(`Failed to read coverage for run ${runId}:`, readError.message);
+    return;
+  }
+
+  const existing = (data?.author_meta_coverage ?? {}) as Record<string, unknown>;
+  const { error } = await supabase
+    .from('discovery_runs')
+    .update({ author_meta_coverage: { ...existing, [term]: coverage } })
+    .eq('id', runId);
+
+  if (error) console.error(`Failed to record coverage for run ${runId}:`, error.message);
+}

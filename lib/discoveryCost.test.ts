@@ -108,23 +108,57 @@ test('BRAND_PROFILES_PER_POST is the documented upper bound', () => {
 
 // ── L2: platform-split pricing ────────────────────────────────────────────────
 
-test('L2: TikTok is priced higher than Instagram for the same run', () => {
+test('L2: TikTok still costs more than Instagram for the same run', () => {
   const ig = estimateDiscoveryCost(6, 200, 'niche', 'instagram');
   const tt = estimateDiscoveryCost(6, 200, 'niche', 'tiktok');
 
   assert.equal(ig.posts, tt.posts);
-  assert.equal(ig.authorProfiles, tt.authorProfiles);
-  assert.ok(tt.totalUsd > ig.totalUsd);
-
-  // 1200 posts x 0.0037 + 895 profiles x 0.005
-  assert.equal(round(tt.totalUsd), 8.92);
+  assert.ok(tt.totalUsd > ig.totalUsd, 'dearer actors, even after the filter');
   assert.equal(round(ig.totalUsd), 5.45);
+  assert.equal(round(tt.totalUsd), 7.56);
 });
 
-test('L2: a single Instagram-priced constant understated TikTok by ~64%', () => {
-  const ig = estimateDiscoveryCost(6, 200, 'niche', 'instagram');
-  const tt = estimateDiscoveryCost(6, 200, 'niche', 'tiktok');
-  assert.ok(tt.totalUsd / ig.totalUsd > 1.6);
+// ── LL1: the pre-scrape filter is modelled, not ignored ──────────────────────
+
+test('LL1: TikTok expects fewer profile scrapes than authors — Instagram does not', () => {
+  const tt = estimateDiscoveryCost(4, 200, 'niche', 'tiktok');
+  assert.equal(tt.authors, 784);
+  assert.equal(tt.freeRejections, 368, 'rejected on the search item, at no cost');
+  assert.equal(tt.authorProfiles, 416);
+  assert.equal(tt.authors, tt.freeRejections + tt.authorProfiles);
+
+  // Instagram carries nothing about the account on a post, so every author
+  // must be scraped to learn their size.
+  const ig = estimateDiscoveryCost(4, 200, 'niche', 'instagram');
+  assert.equal(ig.freeRejections, 0);
+  assert.equal(ig.authorProfiles, ig.authors);
+});
+
+test('LL1: ignoring the filter over-stated a TikTok run by about half', () => {
+  const tt = estimateDiscoveryCost(4, 200, 'niche', 'tiktok');
+  // What the estimate said before the filter was modelled: every author scraped.
+  const naive = tt.hashtagUsd + tt.authors * ACTOR_PRICES_USD.tiktok.profileResult;
+  assert.equal(round(naive), 6.88);
+  assert.equal(round(tt.totalUsd), 5.04);
+  assert.ok(naive / tt.totalUsd > 1.3, 'the over-statement the filter removes');
+});
+
+test('LL1: the probe configuration estimates close to what it actually cost', () => {
+  // One term at 50 results billed $0.18 in total.
+  const e = estimateDiscoveryCost(1, 50, 'niche', 'tiktok');
+  assert.equal(e.posts, 50);
+  assert.equal(e.authors, 49, 'the probe found 49 authors in 50 posts');
+  assert.equal(e.freeRejections, 23, 'and rejected 23 for free');
+  assert.equal(round(e.hashtagUsd), 0.19, 'clockworks billed $0.12 at a lower tier');
+  assert.ok(e.totalUsd < 0.40);
+});
+
+test('LL1: the estimate reads high, never low', () => {
+  // Already-known handles are free too and are deliberately unmodelled, so the
+  // figure is an upper bound on a database that already holds the creators.
+  const e = estimateDiscoveryCost(1, 200, 'niche', 'tiktok');
+  assert.equal(e.freeRejections + e.authorProfiles, e.authors);
+  assert.ok(e.authorProfiles > 0);
 });
 
 test('L2: the platform defaults to instagram, so existing callers are unchanged', () => {

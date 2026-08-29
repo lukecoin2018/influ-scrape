@@ -324,6 +324,19 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
                 <> · {cost.brandProfiles.toLocaleString()} brand profiles ${cost.brandUsd.toFixed(2)}</>
               )}
             </div>
+            {/* The pre-scrape filter's value, shown rather than buried in a
+                total: these are authors rejected on the search item's own
+                follower count, which costs nothing. */}
+            {cost.freeRejections > 0 && (
+              <div className="text-xs text-blue-600 mt-1">
+                {cost.authors.toLocaleString()} authors expected ·{' '}
+                <span className="font-medium">
+                  {cost.freeRejections.toLocaleString()} rejected free
+                </span>{' '}
+                on the search item, saving ~$
+                {(cost.freeRejections * 0.005).toFixed(2)}
+              </div>
+            )}
             {cost.brandProfiles > 0 && (
               <div className="text-xs text-blue-600 mt-1">
                 Brand profile count is an upper bound — the run de-duplicates brands, so actual spend will be lower.

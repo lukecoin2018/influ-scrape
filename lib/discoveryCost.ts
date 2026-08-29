@@ -89,6 +89,36 @@ export function effectiveResultsPerTerm(
 export const AUTHORS_PER_POST = 0.746;
 
 /**
+ * Distinct authors per post on TikTok search.
+ *
+ * Measured on ONE run — 49 authors from 50 posts on "try on haul" — so this is
+ * thin evidence, and it will fall at larger result counts as the same creators
+ * recur within a term. Treated as an upper bound rather than a measurement,
+ * which makes the estimate read high.
+ */
+export const TIKTOK_AUTHORS_PER_POST = 0.98;
+
+/**
+ * Share of TikTok candidates rejected on the search item's own follower count,
+ * before any profile scrape is paid for.
+ *
+ * Measured on the same single run: 23 of 49 fell outside a 30k-500k band and
+ * cost nothing to reject. It varies with the band and the term — a narrow band
+ * or a broad term rejects more — so it is an estimate, not a constant of
+ * nature.
+ *
+ * Modelling it matters because without it the estimate assumes every author
+ * gets a profile scrape, which over-states a TikTok run by roughly half. It is
+ * the number the whole pre-scrape filter exists to move.
+ *
+ * Already-known handles are ALSO free and are deliberately NOT modelled: that
+ * rate depends on what is already in the database, not on the platform. So the
+ * estimate reads high on a database that already holds many of the creators a
+ * term will surface.
+ */
+export const TIKTOK_PRESCRAPE_REJECT_RATE = 0.47;
+
+/**
  * Distinct brand profiles scraped per sponsored post, in Sponsorship mode.
  *
  * UNMEASURED AT RUN SCALE — treat as an upper bound. 1.94 is distinct brands
@@ -108,7 +138,11 @@ export const BRAND_PROFILES_PER_POST = 1.94;
 export interface DiscoveryCostEstimate {
   /** Posts the hashtag scraper is asked for: hashtags x results each. */
   posts: number;
-  /** Profile scrapes for post authors, after within-run handle dedupe. */
+  /** Distinct authors those posts are expected to yield. */
+  authors: number;
+  /** Authors expected to be rejected for free, on the search item's own count. */
+  freeRejections: number;
+  /** Profile scrapes actually expected to be paid for. */
   authorProfiles: number;
   /** Profile scrapes for detected brands. Zero outside Sponsorship mode. */
   brandProfiles: number;
@@ -127,7 +161,17 @@ export function estimateDiscoveryCost(
   const price = ACTOR_PRICES_USD[platform] ?? ACTOR_PRICES_USD.instagram;
 
   const posts = count(hashtagCount) * effectiveResultsPerTerm(resultsPerHashtag, platform);
-  const authorProfiles = Math.round(posts * AUTHORS_PER_POST);
+
+  const authorsPerPost = platform === 'tiktok' ? TIKTOK_AUTHORS_PER_POST : AUTHORS_PER_POST;
+  const authors = Math.round(posts * authorsPerPost);
+
+  // Only TikTok has a pre-scrape filter: clockworks carries authorMeta.fans on
+  // the search item. Instagram's hashtag and keyword posts carry nothing about
+  // the account, so there every author must be scraped to learn their size.
+  const freeRejections = platform === 'tiktok'
+    ? Math.round(authors * TIKTOK_PRESCRAPE_REJECT_RATE)
+    : 0;
+  const authorProfiles = authors - freeRejections;
 
   // Sponsorship mode is Instagram-only, so brand profiles are always priced at
   // the Instagram rate regardless of the platform argument.
@@ -141,6 +185,8 @@ export function estimateDiscoveryCost(
 
   return {
     posts,
+    authors,
+    freeRejections,
     authorProfiles,
     brandProfiles,
     hashtagUsd,

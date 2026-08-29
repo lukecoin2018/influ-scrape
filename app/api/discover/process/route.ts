@@ -17,11 +17,13 @@ import {
 import { importScrapedProfiles } from '@/lib/profileImport';
 import { discoveryImportPolicy } from '@/lib/discoveryPolicy';
 import { normaliseRange, importStatusFor } from '@/lib/followerRange';
+import { parseEnumParam, parseBoundedInt, parseBoolParam, firstError } from '@/lib/requestParams';
 import {
   loadCachedMeasurements,
   loadKnownHandles,
   writeCandidates,
   touchRun,
+  recordAuthorMetaCoverage,
   shouldSkipCachedHandle,
   cacheKey,
   type CandidateRow,
@@ -92,25 +94,28 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
 
     const runId = typeof body.runId === 'string' ? body.runId : '';
+    // Honoured or rejected, never rewritten — see lib/requestParams.
+    const platformP = parseEnumParam('platform', body.platform, ['instagram', 'tiktok'] as const, 'instagram');
+    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword'] as const, 'hashtag');
+    const haltP = parseBoolParam('haltOnLowCoverage', body.haltOnLowCoverage, true);
+    const resultsP = parseBoundedInt('resultsPerHashtag', body.resultsPerHashtag,
+      { min: 1, max: 500, fallback: 100 });
+
+    const paramError = firstError(platformP, sourceP, haltP, resultsP);
+    if (paramError) return NextResponse.json({ error: paramError }, { status: 400 });
+
+    const platform = (platformP as { value: 'instagram' | 'tiktok' }).value;
+    const searchSource = (sourceP as { value: 'hashtag' | 'keyword' }).value;
+    const haltOnLowCoverage = (haltP as { value: boolean }).value;
+    const resultsPerHashtag = (resultsP as { value: number }).value;
+
     // A keyword may legitimately contain spaces; only a tag gets # stripped.
     const rawTerm = String(body.hashtag ?? '').trim().toLowerCase();
-    const hashtag = body.searchSource === 'keyword' ? rawTerm : rawTerm.replace(/^#/, '');
-    const platform: 'instagram' | 'tiktok' = body.platform === 'tiktok' ? 'tiktok' : 'instagram';
-    // Keyword search is now verified on Instagram and being verified on
-    // TikTok, so both platforms accept it.
-    const searchSource: 'hashtag' | 'keyword' =
-      body.searchSource === 'keyword' ? 'keyword' : 'hashtag';
+    const hashtag = searchSource === 'keyword' ? rawTerm : rawTerm.replace(/^#/, '');
     /** Recency window. Off by default — a charged add-on, and a second variable. */
     const dateFilter = typeof body.dateFilter === 'string' && body.dateFilter
       ? body.dateFilter
       : undefined;
-    /**
-     * Halt when the free follower reading is mostly absent. Default ON; a
-     * deliberate probe turns it off to see the actual coverage figure rather
-     * than a halt message.
-     */
-    const haltOnLowCoverage = body.haltOnLowCoverage !== false;
-    const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
 
     if (!runId) return NextResponse.json({ error: 'runId is required' }, { status: 400 });
@@ -157,6 +162,13 @@ export async function POST(request: NextRequest) {
     // authors that DID carry a reading. The rest fall through to a profile
     // scrape, which is the pre-halt behaviour and is what makes the probe safe.
     const usePreScrapeFilter = platform === 'tiktok';
+
+    // Persisted before anything else can go wrong with this term. It is the
+    // measurement the run exists to produce, and it was previously computed,
+    // returned in a response, and lost.
+    if (platform === 'tiktok') {
+      await recordAuthorMetaCoverage(runId, hashtag, coverage);
+    }
 
     // Posts came back and not one of them yielded an author handle.
     //
