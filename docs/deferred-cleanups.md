@@ -379,3 +379,115 @@ have been worse than leaving it whole.
 **Trigger:** the brand-extraction work. Until then the two paths coexist, which
 is why `PipelineStatus` and the four-stage `ProgressPanel` are still alive
 (item 2) — sponsorship is their only remaining consumer.
+
+---
+
+## 14. Results band filter uses `total_followers`, not the platform's count
+
+**Where:** `app/api/database/get-creators/route.ts` filters `total_followers`,
+the creator-level aggregate across platforms.
+
+**What breaks:** a creator at 20k on Instagram and 20k on TikTok has a
+`total_followers` inside a 30k-500k band while being out of band on either
+platform individually. A band query returns them; a platform query should not.
+
+**Currently zero impact, and checked rather than assumed:** creators 7,247
+against social_profiles 7,131, and a query for rows carrying both an
+`instagram_followers` and a `tiktok_followers` returns none. No creator has two
+profiles yet.
+
+**Trigger: the first creator discovered on both platforms.** TikTok Discovery
+makes that possible for the first time, so this stops being latent as soon as
+the same person is found on both. The Discovery Results tab no longer uses this
+route (it reads discovery_candidates instead), but the Creators page still does.
+
+---
+
+## 15. Every fetch boundary casts without validating
+
+**Where:** all four client fetches in `app/page.tsx` —
+`/api/discover/start`, `/process`, `/finish`, `/api/discover/run-results` —
+plus `DiscoveryFunnel`'s `HashtagResult`. Each does `data as T` with no runtime
+check.
+
+**Framing, because this is not a style note:** it is the mechanism behind both
+bugs in this conversion that unit tests could not reach and only inspection
+found. The `v_creator_summary` mismatch (per-creator columns assigned to a
+per-profile shape) would have rendered blank rows and then thrown on
+`undefined.toLocaleString()`. The unscoped Results query returned the wrong
+rows with entirely valid types. In both cases the compiler was satisfied and the
+tests passed.
+
+**How it fails now:** a renamed or missing numeric field becomes `undefined`,
+`DiscoveryFunnel`'s `sum()` yields `NaN`, and the totals row renders "NaN". No
+crash, silently wrong numbers — on the screen you are using to judge whether a
+paid run worked.
+
+**Consequence for now:** read the first run's funnel against the SQL rather than
+trusting the screen. That is why the C8 procedure pairs every displayed number
+with a query.
+
+**Fix:** a narrow parse at each boundary — not necessarily a validation library,
+a hand-written `parseHashtagResult` that returns null on shape mismatch would
+catch the whole class.
+
+**Trigger:** a third bug of this kind, or the next route added to the page.
+
+---
+
+## 16. Stop's server-side half is unverified in production
+
+**Where:** `app/api/discover/process/route.ts` reads `request.signal.aborted` at
+two points, and passes the signal into the profile batch loop.
+
+**What is unverified:** whether Vercel surfaces a client disconnect as an
+aborted `request.signal` at all. A platform that buffers the request may never
+fire it. Locally `next dev` does not exercise this, and no unit test can — the
+tests inject their own AbortSignal, which proves the loop responds to a signal,
+not that the platform sends one.
+
+**If it does not fire:** the client-side half still works — the fetch is aborted
+and the runner stops issuing new hashtags — but the route already in flight runs
+to completion, including every remaining profile batch. At 900 handles that is
+up to eighteen billable Apify runs after Stop was pressed. Silent, and visible
+only on the bill.
+
+**Named deploy-time check.** After the first deployed run:
+
+1. Start a run with one hashtag at 500 results, so the profile phase has many
+   batches.
+2. Press Stop during the profile phase.
+3. Read the run's row: `SELECT status, last_progress_at FROM discovery_runs
+   WHERE id = '<run id>';` and count candidates that reached a measurement:
+   `SELECT count(*) FROM discovery_candidates WHERE run_id = '<run id>'
+   AND measured_at IS NOT NULL;`
+4. Wait two minutes and re-run the count. **If it keeps rising after Stop, the
+   signal did not fire** and batches are still running.
+
+**If it does not fire,** the fallback is a server-side deadline short enough to
+bound the damage, or a cancellation flag on discovery_runs that the batch loop
+polls between batches — neither of which depends on the platform propagating a
+disconnect.
+
+---
+
+## 17. ResultsTable cannot render a missing count
+
+**Where:** `components/ResultsTable.tsx` formats `followingCount` and
+`postsCount` with `.toLocaleString()` unconditionally.
+
+**What it means:** `v_creator_summary` carries neither, so
+`summaryRowToCreator` forces `0`. Every creator in the Discovery Results tab
+shows 0 following and 0 posts, which reads as a measurement rather than as an
+absence — and 0 is a legitimate value, so the display cannot be told apart from
+a real zero.
+
+**Why not fixed with F1/F3:** rendering "—" needs
+`DiscoveredCreator.followingCount` and `.postsCount` widened to `number | null`,
+which reaches roughly fifteen construction sites across `app/add`,
+`app/import`, `lib/apify`, `lib/profileImportCore` and `ExportButton`, and
+requires null handling in ResultsTable's sort comparators, which sort on both
+fields. That is a wider refactor than a two-fix commit should carry.
+
+**Trigger:** any other reason to touch DiscoveredCreator's shape, or the first
+time someone reads a Discovery result as "this creator has posted nothing".

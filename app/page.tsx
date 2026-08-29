@@ -221,7 +221,7 @@ export default function Home() {
       // start() resolves when the loop ends, however it ended, so this runs for
       // a stopped run too. Closing the row is the client's job because a run
       // spans many per-hashtag calls and none of them knows it was the last.
-      await finishRun(data.runId, config);
+      await finishRun(data.runId);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to start discovery');
     } finally {
@@ -236,7 +236,7 @@ export default function Home() {
    * 900 profiles per hashtag mid-run would be a heavy payload for a progress
    * display. The full table is read from the database once, at the end.
    */
-  const finishRun = async (id: string, config: DiscoveryConfig) => {
+  const finishRun = async (id: string) => {
     const rows = runnerResultsRef.current;
     const totals = {
       totalPostsFound: rows.reduce((n, r) => n + r.postsFound, 0),
@@ -264,19 +264,22 @@ export default function Home() {
     if (totals.creatorsInRange === 0) return;
 
     try {
-      const params = new URLSearchParams({
-        platform,
-        minFollowers: String(config.minFollowers),
-        maxFollowers: String(config.maxFollowers),
-        limit: '500',
-      });
-      const res = await fetch(`/api/database/get-creators?${params}`);
+      // Scoped to THIS run via discovery_candidates, not to the follower band.
+      // A band query has no run dimension and would show the pre-existing
+      // database slice as though it were the run's output.
+      const res = await fetch(`/api/discover/run-results/${id}`);
       if (res.ok) {
         const data = await res.json();
         const rows: CreatorSummaryRow[] = data.creators || [];
+        const runPlatform: Platform = data.platform === 'tiktok' ? 'tiktok' : 'instagram';
         setCreators(
-          rows.map(row => summaryRowToCreator(row, platform)).filter(c => c.handle),
+          rows.map(row => summaryRowToCreator(row, runPlatform)).filter(c => c.handle),
         );
+        if (data.missing > 0) {
+          console.warn(
+            `${data.missing} imported handle(s) were not found in v_creator_summary for run ${id}`,
+          );
+        }
       }
     } catch (err) {
       console.error('Failed to load imported creators:', err);
@@ -744,7 +747,8 @@ const brandRunId = brandData.runId;
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => setPlatform('instagram')}
-                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
+                  disabled={isStarting || runner.isRunning}
+                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                     platform === 'instagram'
                       ? 'bg-pink-50 border-pink-500 text-pink-700'
                       : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
@@ -754,7 +758,8 @@ const brandRunId = brandData.runId;
                 </button>
                 <button
                   onClick={() => setPlatform('tiktok')}
-                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
+                  disabled={isStarting || runner.isRunning}
+                  className={`px-4 py-3 rounded-lg font-medium transition-all border-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                     platform === 'tiktok'
                       ? 'bg-black border-black text-white'
                       : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
