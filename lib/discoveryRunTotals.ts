@@ -35,6 +35,7 @@ const SCRAPED: CandidateOutcome[] = [
   'imported_archive_high',
   'imported_archive_low',
   'rejected_below_floor',
+  'rejected_above_max',
   'unknown_size',
   'scrape_missing',
 ];

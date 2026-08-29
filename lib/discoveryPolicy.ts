@@ -1,38 +1,38 @@
-import { NEAR_MISS_FLOOR } from './followerRange';
 import type { ImportPolicy } from './profileImportCore';
-
-export { NEAR_MISS_FLOOR };
 
 /**
  * How Discovery routes a scraped profile, as against how brand-feed does.
  *
  * The archive holds creators who are outside the band but still QUALIFIED.
- * Brand-feed candidates qualify by construction: a brand chose to feature
- * them, so an 18k account on a brand's feed is someone in the business whose
- * partnership edge is real. Hashtag and keyword candidates pass through no
- * selection step at all — somebody with 800 followers who used #grwm is not a
- * creator, they are a person who used a word. Archiving those would fill a
- * table built for one kind of evidence with another, and nothing downstream
- * could tell them apart.
+ * Brand-feed candidates qualify by construction: a brand chose to feature them,
+ * so an 18k account on a brand's feed is someone in the business who is simply
+ * small, and the partnership edge is real evidence about them.
  *
- * So Discovery splits the below-min group at a floor:
+ * Hashtag and keyword candidates pass through no selection step at all. An 18k
+ * account that used #grwm is not a small creator — it is an account with 18k
+ * followers. Nothing about appearing under a search term says anything about
+ * whether the person behind it is in this business.
  *
- *   >= floor, < min   archived as out_of_range_low, like brand-feed. Near
- *                     misses, and keyword search is expected to surface
- *                     emerging creators no brand has tagged yet.
- *   < floor           cache only. The handle and its follower count are
- *                     recorded so it is never re-scraped, and nothing else.
+ * So Discovery archives nothing. Every out-of-range verdict, in EITHER
+ * direction, goes to the reject cache: handle, platform, follower count,
+ * timestamp. Enough never to pay for that handle again, and no creator record
+ * for someone who has not been shown to be one.
  *
- * Every other verdict imports, including 'unknown_size': an unmeasured handle
- * has to reach social_profiles for enrichment to re-measure it later.
+ * This replaces a near-miss floor that sent Discovery's 15k-30k candidates to
+ * the archive and only cached below that. The floor drew a line inside a
+ * population that is uniformly unqualified — a 20k keyword hit is no more a
+ * creator than a 12k one — and the archive is not the place for either.
  *
- * The floor is a guess pending the first instrumented run. Moving it is a
- * one-constant change, but lowering it strands already-cached handles between
- * the old and new values — see docs/deferred-cleanups.md for the query that
- * finds them.
+ * Two verdicts still import:
+ *
+ *   'active'        in band, which is the whole point
+ *   'unknown_size'  the follower count was not measured, so no verdict has been
+ *                   reached about it. It lands in social_profiles as non-active
+ *                   where enrichment can re-measure it. Caching it would file a
+ *                   permanent rejection on the strength of a failed scrape.
  */
-export const discoveryImportPolicy: ImportPolicy = (profile, status) => {
-  if (status === 'out_of_range_low' && profile.followerCount < NEAR_MISS_FLOOR) {
+export const discoveryImportPolicy: ImportPolicy = (_profile, status) => {
+  if (status === 'out_of_range_low' || status === 'out_of_range_high') {
     return 'cache_only';
   }
   return 'import';

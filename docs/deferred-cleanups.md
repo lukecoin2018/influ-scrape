@@ -123,42 +123,28 @@ Discovery route anyway.
 
 ---
 
-## Reference: finding stranded handles after the near-miss floor moves
+## Reference: the near-miss floor was removed
 
-Not a cleanup — a query recorded here so it is findable when the floor changes,
-rather than living only in a conversation.
+`NEAR_MISS_FLOOR` sent Discovery's 15k-30k candidates to the archive and cached
+only what fell below it. It no longer exists.
 
-`NEAR_MISS_FLOOR` (lib/followerRange.ts, used by lib/discoveryPolicy.ts) splits
-Discovery's below-min candidates: at or above it they are archived as
-`out_of_range_low`, below it they are cache-only with no creator record.
+The line it drew ran through a population that is uniformly unqualified. The
+archive holds creators who are outside the band but still qualified, and
+brand-feed candidates qualify because a brand chose to feature them. A keyword
+or hashtag candidate passes through no selection step, so a 20k hit is no more a
+creator than a 12k one — the floor was picking a point inside "not qualified"
+and treating one side as if it were qualified.
 
-Changing it is a one-constant change with no migration, but the two directions
-are asymmetric:
+Discovery now caches every out-of-range verdict in both directions and archives
+nothing. The constant had one consumer, `discoveryPolicy.ts`, and was deleted
+with it. The distribution query that was meant to set its value is still worth
+running — it says what Discovery's candidate pool actually looks like — but it
+no longer decides anything.
 
-**Raising it** (15k -> 20k) strands nothing. Handles already archived between
-the old and new values stay archived as slightly over-inclusive residue. Leave
-them: correcting would mean an archive -> cache move, which is the cross-table
-path carrying the promotion hazard.
-
-**Lowering it** (15k -> 10k) strands handles already cached between the new and
-old values. They would now qualify for the archive, but the dedupe cache check
-compares against `minFollowers`, not against the floor, so they stay rejected
-until their TTL expires. Only the follower count was kept, so re-admitting them
-needs a re-scrape.
-
-The stranded set, with counts so the cost is visible before deciding:
-
-```sql
-SELECT DISTINCT platform, handle, follower_count
-FROM discovery_candidates
-WHERE outcome = 'rejected_below_floor'
-  AND follower_count >= <new floor>
-ORDER BY follower_count DESC;
-```
-
-Either wait out `REJECT_CACHE_TTL_DAYS`, or re-scrape that list deliberately.
-
----
+Four rows reached the archive before this change, all from run 328349c2 under
+#fashionblogger, between 15,520 and 28,764 followers. Optional cleanup is in
+docs/migrations/2026-08-29-remove-discovery-archive-rows.OPTIONAL.sql. Leaving
+them costs nothing: nothing reads the archive.
 
 ## Reference: the growth premise behind the archive/cache split
 
@@ -217,11 +203,12 @@ as designed, not that it is false.
 
 ---
 
-## Reference: the near-miss archive has no consumer yet
+## Reference: the archive has no consumer yet
 
-Discovery archives its 15k-30k candidates as `out_of_range_low` rather than
-caching them, on the reasoning that a near miss is a creator worth keeping a
-full record of. That reasoning depends on machinery that does not exist:
+Brand-feed archives its out-of-range candidates on the reasoning that a
+qualified creator outside the band is worth keeping a full record of. Discovery
+no longer archives anything, so this now concerns brand-feed alone. The
+reasoning still depends on machinery that does not exist:
 
 - **Nothing reads the archive tables.** An unbounded search for
   `social_profiles_archive` / `creators_archive` / `v_social_profiles_all`
@@ -243,18 +230,20 @@ full record of. That reasoning depends on machinery that does not exist:
   Currently latent: brand-feed only imports handles with no existing profile,
   so the path has never run.
 
-**Archiving the 15k-30k band is therefore a deliberate bet on machinery that
-has yet to be built**, not a use of something that works today.
+**Brand-feed's archiving is therefore a deliberate bet on machinery that has yet
+to be built**, not a use of something that works today.
 
-It is still the right call. The data is cheap to keep — a few hundred rows per
-run — and impossible to recover later: once a handle is cached with only its
-follower count, rebuilding the full profile needs a fresh paid scrape. Keeping
-the record costs little now and preserves an option; discarding it forecloses
-one.
+It is still the right call there. A brand-feed candidate is qualified by the
+brand's own selection, the data is cheap to keep, and it is impossible to
+recover later: once a handle is cached with only its follower count, rebuilding
+the full profile needs a fresh paid scrape.
 
-But the bet should be visible rather than inferred. If the promotion path is
-still unbuilt when the floor is next reviewed, that is an argument for building
-it, not for having archived nothing.
+It was NOT the right call for Discovery, which is why Discovery stopped. The
+difference is entirely in whether the candidate passed a selection step, not in
+how far outside the band it landed.
+
+If the promotion path is still unbuilt when this is next reviewed, that is an
+argument for building it, not for brand-feed having archived nothing.
 ---
 
 ## 8. Two `discovery_runs.status` spellings

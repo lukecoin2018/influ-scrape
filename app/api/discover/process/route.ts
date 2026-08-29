@@ -240,12 +240,16 @@ export async function POST(request: NextRequest) {
     const measuredRows: CandidateRow[] = imported.measured.map(m => ({
       handle: m.handle,
       followerCount: m.followerCount,
+      // Discovery archives nothing, so imported_archive_* are no longer
+      // produced here; they remain in the taxonomy for the rows written before
+      // this change. Direction is preserved in the cache because it decides
+      // re-admission: a below-min handle can grow into the band, an above-max
+      // one only re-enters if the band's ceiling is raised.
       outcome:
-        m.decision === 'cache_only' ? 'rejected_below_floor'
-        : m.status === 'active' ? 'imported_active'
-        : m.status === 'out_of_range_high' ? 'imported_archive_high'
-        : m.status === 'out_of_range_low' ? 'imported_archive_low'
-        : 'unknown_size',
+        m.decision === 'cache_only'
+          ? (m.status === 'out_of_range_high' ? 'rejected_above_max' : 'rejected_below_floor')
+          : m.status === 'active' ? 'imported_active'
+          : 'unknown_size',
     }));
 
     // Submitted, its batch returned, but the actor produced no profile for it —

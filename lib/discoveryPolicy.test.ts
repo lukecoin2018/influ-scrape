@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runProfileImport, type ImportOutcome } from './profileImportCore.ts';
-import { discoveryImportPolicy, NEAR_MISS_FLOOR } from './discoveryPolicy.ts';
+import { discoveryImportPolicy } from './discoveryPolicy.ts';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from './followerRange.ts';
 import type { ImportableCreator, ImportResult } from './creatorImport.ts';
 
@@ -44,23 +44,30 @@ async function route(followerCount: number | null, source: 'discovery' | 'brand_
   };
 }
 
-test('the floor is 15,000', () => {
-  assert.equal(NEAR_MISS_FLOOR, 15_000);
+test('BB2: Discovery has no near-miss floor — the archive/cache line it drew is gone', async () => {
+  // Every out-of-range verdict caches, at any distance from the band. A 20k
+  // keyword hit is no more a creator than a 12k one.
+  for (const followers of [800, 14_999, 15_000, 20_000, 29_999]) {
+    const r = await route(followers, 'discovery');
+    assert.equal(r.importedStatus, null, `${followers} must not be imported`);
+    assert.equal(r.cached?.followerCount, followers, `${followers} must be cached`);
+  }
 });
 
 // ── G3: the full routing table, boundaries included ───────────────────────────
 
-test('G3: above max archives high, from EITHER source', async () => {
-  for (const source of ['discovery', 'brand_feed'] as const) {
-    const r = await route(500_001, source);
-    assert.equal(r.importedStatus, 'out_of_range_high', source);
-    assert.equal(r.cached, null, `${source} must not cache a mega-creator`);
-  }
+test('BB2: brand_feed still archives above max — its candidates are qualified', async () => {
+  const r = await route(500_001, 'brand_feed');
+  assert.equal(r.importedStatus, 'out_of_range_high');
+  assert.equal(r.cached, null, 'brand-feed caches nothing');
 });
 
 test('G3: exactly 500,000 is in band, 500,001 is not', async () => {
   assert.equal((await route(500_000, 'discovery')).importedStatus, 'active');
-  assert.equal((await route(500_001, 'discovery')).importedStatus, 'out_of_range_high');
+  // Still out of range — but Discovery caches it rather than archiving it.
+  assert.equal((await route(500_001, 'discovery')).importedStatus, null);
+  assert.equal((await route(500_001, 'discovery')).cached?.followerCount, 500_001);
+  assert.equal((await route(500_001, 'brand_feed')).importedStatus, 'out_of_range_high');
 });
 
 test('G3: brand_feed below min archives low at any size, including below the floor', async () => {
@@ -71,15 +78,21 @@ test('G3: brand_feed below min archives low at any size, including below the flo
   }
 });
 
-test('G3: Discovery 15k-30k archives low', async () => {
+test('BB2: Discovery 15k-30k now caches instead of archiving', async () => {
   for (const followers of [15_000, 20_000, 29_999]) {
     const r = await route(followers, 'discovery');
-    assert.equal(r.importedStatus, 'out_of_range_low', `${followers}`);
-    assert.equal(r.cached, null, `${followers} is a near miss, not a reject`);
+    assert.equal(r.importedStatus, null, `${followers} no longer archives`);
+    assert.equal(r.cached?.followerCount, followers);
   }
 });
 
-test('G3: Discovery below the floor is cache-only with NO creator record', async () => {
+test('BB2: Discovery ABOVE the band caches too — a mega-account is not qualified either', async () => {
+  const r = await route(900_000, 'discovery');
+  assert.equal(r.importedStatus, null, 'no creator record');
+  assert.equal(r.cached?.followerCount, 900_000);
+});
+
+test('G3: Discovery out of range is cache-only with NO creator record', async () => {
   for (const followers of [1, 800, 5_000, 14_999]) {
     const r = await route(followers, 'discovery');
     assert.equal(r.importedStatus, null, `${followers} must not be imported`);
@@ -88,20 +101,14 @@ test('G3: Discovery below the floor is cache-only with NO creator record', async
   }
 });
 
-test('G3: the floor boundary — 14,999 caches, 15,000 archives', async () => {
-  const below = await route(NEAR_MISS_FLOOR - 1, 'discovery');
-  assert.equal(below.importedStatus, null);
-  assert.equal(below.cached?.followerCount, 14_999);
-
-  const at = await route(NEAR_MISS_FLOOR, 'discovery');
-  assert.equal(at.importedStatus, 'out_of_range_low');
-  assert.equal(at.cached, null);
-});
-
-test('G3: the band boundary — 29,999 archives low, 30,000 is active', async () => {
-  assert.equal((await route(29_999, 'discovery')).importedStatus, 'out_of_range_low');
+test('BB2: the only boundary left is the band itself', async () => {
+  assert.equal((await route(29_999, 'discovery')).cached?.followerCount, 29_999);
   assert.equal((await route(30_000, 'discovery')).importedStatus, 'active');
+  assert.equal((await route(500_000, 'discovery')).importedStatus, 'active');
+  assert.equal((await route(500_001, 'discovery')).cached?.followerCount, 500_001);
 });
+
+
 
 test('G3: 0 and null are unknown_size and ARE imported, from either source', async () => {
   for (const source of ['discovery', 'brand_feed'] as const) {

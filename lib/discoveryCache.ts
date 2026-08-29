@@ -24,6 +24,7 @@ export const CANDIDATE_OUTCOMES = [
   'imported_archive_high',
   'imported_archive_low',
   'rejected_below_floor',
+  'rejected_above_max',
   'unknown_size',
 ] as const;
 
@@ -53,10 +54,12 @@ export interface CachedMeasurement {
  * Three conditions, all required:
  *
  *   1. There is a measurement at all.
- *   2. It is still below the CURRENT minimum. Comparing against the current
- *      band rather than the one in force when the reading was taken is what
- *      makes the reject soft: lower the band to 15k and every handle cached at
- *      18k re-enters immediately, with no wait.
+ *   2. It is still OUTSIDE the current band — in either direction. Discovery
+ *      caches above-max handles as well as below-min ones, so a check against
+ *      the minimum alone would re-scrape every mega-account on every run.
+ *      Comparing against the CURRENT band rather than the one in force when the
+ *      reading was taken is what makes the reject soft: lower the band to 15k
+ *      and every handle cached at 18k re-enters immediately, with no wait.
  *   3. It has not expired.
  *
  * A stale reading is only ever wrong conservatively — a handle cached at 18k
@@ -71,7 +74,8 @@ export function shouldSkipCachedHandle(
 ): boolean {
   if (!cached) return false;
   if (!Number.isFinite(cached.followerCount)) return false;
-  if (cached.followerCount >= range.min) return false;
+  // Back inside the band means re-admit, whichever side it was cached on.
+  if (cached.followerCount >= range.min && cached.followerCount <= range.max) return false;
 
   const measured = new Date(cached.measuredAt).getTime();
   if (Number.isNaN(measured)) return false;

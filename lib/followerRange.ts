@@ -12,15 +12,6 @@
 export const DEFAULT_MIN_FOLLOWERS = 30_000;
 export const DEFAULT_MAX_FOLLOWERS = 500_000;
 
-/**
- * Below this, a Discovery candidate is cached as a reject rather than archived
- * as a creator. Lives here beside the band it divides; the routing rule that
- * uses it is in discoveryPolicy.ts.
- *
- * A starting value, not a measured one — the first instrumented Discovery run
- * reports the <5k / 5k-15k / 15k-30k split that should set it.
- */
-export const NEAR_MISS_FLOOR = 15_000;
 
 /**
  * Out-of-range is split by direction because the two groups have opposite

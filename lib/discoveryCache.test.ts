@@ -18,9 +18,14 @@ const cached = (followerCount: number, days = 1): CachedMeasurement => ({
   platform: 'instagram', handle: 'h', followerCount, measuredAt: daysAgo(days),
 });
 
-test('the taxonomy has the ten values the CHECK constraint lists', () => {
-  assert.equal(CANDIDATE_OUTCOMES.length, 10);
-  assert.equal(new Set(CANDIDATE_OUTCOMES).size, 10, 'no duplicates');
+test('the taxonomy matches the CHECK constraint — eleven values, no duplicates', () => {
+  // Ten originally; 'rejected_above_max' was added when Discovery stopped
+  // archiving out-of-range candidates in either direction. The two
+  // imported_archive_* values remain for rows written before that change.
+  assert.equal(CANDIDATE_OUTCOMES.length, 11);
+  assert.equal(new Set(CANDIDATE_OUTCOMES).size, 11, 'no duplicates');
+  assert.ok(CANDIDATE_OUTCOMES.includes('rejected_above_max'));
+  assert.ok(CANDIDATE_OUTCOMES.includes('rejected_below_floor'));
 });
 
 test('the TTL is 90 days, matching the enrichment staleDays default', () => {
@@ -43,8 +48,25 @@ test('a measurement inside the band is not skipped', () => {
   assert.equal(shouldSkipCachedHandle(cached(100_000), BAND, NOW), false);
 });
 
-test('an above-max measurement is not skipped — those are archived, not cached', () => {
-  assert.equal(shouldSkipCachedHandle(cached(900_000), BAND, NOW), false);
+test('BB2: an above-max measurement IS skipped — Discovery caches those now', () => {
+  assert.equal(shouldSkipCachedHandle(cached(900_000), BAND, NOW), true);
+  assert.equal(shouldSkipCachedHandle(cached(500_001), BAND, NOW), true);
+  assert.equal(shouldSkipCachedHandle(cached(500_000), BAND, NOW), false, 'in band');
+});
+
+test('BB2: raising the ceiling re-admits an above-max handle immediately', () => {
+  const entry = cached(700_000, 1);
+  assert.equal(shouldSkipCachedHandle(entry, { min: 30_000, max: 500_000 }, NOW), true);
+  assert.equal(shouldSkipCachedHandle(entry, { min: 30_000, max: 1_000_000 }, NOW), false);
+});
+
+test('BB2: re-admission is symmetric — inside the band either way means re-scrape', () => {
+  for (const followers of [30_000, 100_000, 500_000]) {
+    assert.equal(shouldSkipCachedHandle(cached(followers), BAND, NOW), false, `${followers}`);
+  }
+  for (const followers of [1, 29_999, 500_001, 9_000_000]) {
+    assert.equal(shouldSkipCachedHandle(cached(followers), BAND, NOW), true, `${followers}`);
+  }
 });
 
 test('lowering the band re-admits a cached handle immediately, with no TTL wait', () => {
