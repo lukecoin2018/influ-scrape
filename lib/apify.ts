@@ -227,18 +227,58 @@ export async function startPostScraper(
  * an Apify run that hangs would otherwise keep a route handler alive until
  * the platform kills it, with no diagnostic.
  */
+/**
+ * Thrown when we stop waiting on a run that is still going.
+ *
+ * Carries the runId and datasetId, because the run itself is unaffected by our
+ * giving up: it keeps going, finishes, and bills. A "try on haul" search
+ * finished successfully in 289s with all 200 results and $0.46 billed, twenty
+ * seconds after the caller stopped waiting at 269s, and the data was discarded
+ * because nothing recorded where it was.
+ *
+ * A caller that catches this can record the identifiers and recover the results
+ * through the import path instead of paying to scrape them again.
+ */
+export class ApifyRunTimeout extends Error {
+  readonly runId: string;
+  readonly datasetId?: string;
+  readonly waitedMs: number;
+  readonly lastStatus: string;
+
+  constructor(runId: string, datasetId: string | undefined, waitedMs: number, lastStatus: string) {
+    super(
+      `Stopped waiting on Apify run ${runId} after ${Math.round(waitedMs / 1000)}s ` +
+      `(last status ${lastStatus}). The run is still going and will bill. ` +
+      `Dataset ${datasetId ?? 'unknown'} — recoverable via import, do not re-scrape.`
+    );
+    this.name = 'ApifyRunTimeout';
+    this.runId = runId;
+    this.datasetId = datasetId;
+    this.waitedMs = waitedMs;
+    this.lastStatus = lastStatus;
+  }
+}
+
 export async function waitForRun(
   runId: string,
   options: { timeoutMs?: number; intervalMs?: number } = {}
 ): Promise<{ status: string; datasetId?: string }> {
   const timeoutMs = options.timeoutMs ?? 240_000;
   const intervalMs = options.intervalMs ?? 3_000;
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+
+  // The dataset id is known from the first poll, long before the run finishes.
+  // Held so a timeout can report where the results will be.
+  let lastDatasetId: string | undefined;
+  let lastStatus = 'UNKNOWN';
 
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, intervalMs));
 
     const { status, datasetId } = await getRunStatus(runId);
+    lastStatus = status;
+    if (datasetId) lastDatasetId = datasetId;
 
     if (status === 'SUCCEEDED') return { status, datasetId };
     if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
@@ -246,7 +286,7 @@ export async function waitForRun(
     }
   }
 
-  throw new Error(`Apify run ${runId} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+  throw new ApifyRunTimeout(runId, lastDatasetId, Date.now() - startedAt, lastStatus);
 }
 
 
