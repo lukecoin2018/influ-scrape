@@ -81,8 +81,16 @@ export async function loadKnownHandles(
 export interface CandidateRow {
   handle: string;
   outcome: CandidateOutcome;
-  /** Omitted until the profile scrape returns a reading. */
+  /** From a profile scrape. Omitted until one returns a reading. */
   followerCount?: number | null;
+  /**
+   * From the search item's author metadata — free, no profile scrape.
+   * Recorded for every candidate that carried one, whatever happened next.
+   */
+  authorFollowerCount?: number | null;
+  authorTtSeller?: boolean | null;
+  authorSignature?: string | null;
+  authorVerified?: boolean | null;
 }
 
 /**
@@ -106,15 +114,29 @@ export async function writeCandidates(
 
   const now = new Date().toISOString();
   const payload = rows.map(row => {
-    const measured = typeof row.followerCount === 'number' && Number.isFinite(row.followerCount);
+    const scraped = typeof row.followerCount === 'number' && Number.isFinite(row.followerCount);
+    const fromSearch = typeof row.authorFollowerCount === 'number'
+      && Number.isFinite(row.authorFollowerCount);
+
+    // Both are real measurements; one cost $0.005 and one was free. The reject
+    // cache reads follower_count, so a free reading has to land there too or a
+    // handle rejected before scraping would be re-scraped on every future run.
+    // follower_count_source is what keeps the two distinguishable.
+    const followerCount = scraped ? row.followerCount! : fromSearch ? row.authorFollowerCount! : null;
+    const source = scraped ? 'profile_scrape' : fromSearch ? 'search_item' : null;
+
     return {
       run_id: runId,
       hashtag,
       platform,
       handle: norm(row.handle),
       outcome: row.outcome,
-      follower_count: measured ? row.followerCount : null,
-      measured_at: measured ? now : null,
+      follower_count: followerCount,
+      measured_at: followerCount === null ? null : now,
+      follower_count_source: source,
+      author_ttseller: row.authorTtSeller ?? null,
+      author_signature: row.authorSignature ?? null,
+      author_verified: row.authorVerified ?? null,
     };
   });
 

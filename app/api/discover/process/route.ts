@@ -7,9 +7,16 @@ import {
 } from '@/lib/apify';
 import { loadEntityExcludedHandles } from '@/lib/entityFilter';
 import { extractAuthorHandles } from '@/lib/discoveryPosts';
+import {
+  extractAuthorMeta,
+  summariseAuthorMetaCoverage,
+  shouldHaltOnCoverage,
+  MIN_FOLLOWER_COVERAGE,
+  type SearchAuthorMeta,
+} from '@/lib/tiktokAuthorMeta';
 import { importScrapedProfiles } from '@/lib/profileImport';
 import { discoveryImportPolicy } from '@/lib/discoveryPolicy';
-import { normaliseRange } from '@/lib/followerRange';
+import { normaliseRange, importStatusFor } from '@/lib/followerRange';
 import {
   loadCachedMeasurements,
   loadKnownHandles,
@@ -72,6 +79,8 @@ interface Funnel {
   entityExcluded: number;
   alreadyKnown: number;
   cachedReject: number;
+  /** Rejected on the free follower reading, before any profile scrape. */
+  preScrapeOutOfBand: number;
   toScrape: number;
 }
 
@@ -87,8 +96,14 @@ export async function POST(request: NextRequest) {
     const rawTerm = String(body.hashtag ?? '').trim().toLowerCase();
     const hashtag = body.searchSource === 'keyword' ? rawTerm : rawTerm.replace(/^#/, '');
     const platform: 'instagram' | 'tiktok' = body.platform === 'tiktok' ? 'tiktok' : 'instagram';
+    // Keyword search is now verified on Instagram and being verified on
+    // TikTok, so both platforms accept it.
     const searchSource: 'hashtag' | 'keyword' =
-      body.searchSource === 'keyword' && platform === 'instagram' ? 'keyword' : 'hashtag';
+      body.searchSource === 'keyword' ? 'keyword' : 'hashtag';
+    /** Recency window. Off by default — a charged add-on, and a second variable. */
+    const dateFilter = typeof body.dateFilter === 'string' && body.dateFilter
+      ? body.dateFilter
+      : undefined;
     const resultsPerHashtag = Math.max(1, Math.min(Number(body.resultsPerHashtag) || 100, 500));
     const range = normaliseRange(body.minFollowers, body.maxFollowers);
 
@@ -96,7 +111,8 @@ export async function POST(request: NextRequest) {
     if (!hashtag) return NextResponse.json({ error: 'hashtag is required' }, { status: 400 });
 
     const empty: Funnel = {
-      candidatesFound: 0, entityExcluded: 0, alreadyKnown: 0, cachedReject: 0, toScrape: 0,
+      candidatesFound: 0, entityExcluded: 0, alreadyKnown: 0, cachedReject: 0,
+      preScrapeOutOfBand: 0, toScrape: 0,
     };
 
     // ── Cancellation check A: nothing spent yet ────────────────────────────
@@ -110,7 +126,10 @@ export async function POST(request: NextRequest) {
 
     // ── 1. Hashtag / keyword scrape ────────────────────────────────────────
     const { runId: scrapeRunId } = platform === 'tiktok'
-      ? await startTikTokHashtagScraper([hashtag], resultsPerHashtag)
+      ? await startTikTokHashtagScraper([hashtag], resultsPerHashtag, {
+          keyword: searchSource === 'keyword',
+          dateFilter,
+        })
       : await startHashtagScraper([hashtag], resultsPerHashtag, searchSource === 'keyword');
 
     // Bounded by what remains of the budget, so a slow actor cannot consume
@@ -122,6 +141,12 @@ export async function POST(request: NextRequest) {
 
     const posts = await getDatasetItems<unknown>(datasetId, resultsPerHashtag);
     const candidates = extractAuthorHandles(posts, platform);
+
+    // Author metadata carried on the search item itself. TikTok only; Instagram
+    // posts carry nothing about the account behind them.
+    const authorMeta = platform === 'tiktok' ? extractAuthorMeta(posts) : new Map();
+    const coverage = summariseAuthorMetaCoverage(authorMeta);
+    const usePreScrapeFilter = platform === 'tiktok' && !shouldHaltOnCoverage(coverage);
 
     // Posts came back and not one of them yielded an author handle.
     //
@@ -151,6 +176,33 @@ export async function POST(request: NextRequest) {
           (searchSource === 'keyword'
             ? '; Instagram\'s keyword dataset differs from its hashtag dataset, so the field may be named differently or absent.'
             : '.'),
+        postsFound: posts.length,
+        ...empty,
+        imported: null,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+
+    // ── FF1: halt rather than fall back ────────────────────────────────────
+    //
+    // If the follower count is not on the search items, the pre-scrape filter
+    // does not exist and every distinct author would need a profile scrape —
+    // roughly 150 per term at $0.005 against a handful when the filter works.
+    // That is a different actor's economics, and nobody chose them. Stopping
+    // costs one search; falling back costs the difference, silently, on a bill.
+    if (platform === 'tiktok' && shouldHaltOnCoverage(coverage)) {
+      await touchRun(runId);
+      return NextResponse.json({
+        hashtag, platform, searchSource,
+        cancelled: false, timedOut: false, extractionFailed: false,
+        halted: true,
+        haltReason:
+          `authorMeta.fans is present on ${coverage.withFollowerCount} of ` +
+          `${coverage.items} authors (${(coverage.followerCountRate * 100).toFixed(0)}%), ` +
+          `below the ${(MIN_FOLLOWER_COVERAGE * 100).toFixed(0)}% needed to filter before ` +
+          `scraping. Halted rather than scraping every author, which would cost about ` +
+          `$${(coverage.items * 0.005).toFixed(2)} for this term alone.`,
+        authorMetaCoverage: coverage,
         postsFound: posts.length,
         ...empty,
         imported: null,
@@ -190,8 +242,32 @@ export async function POST(request: NextRequest) {
         funnel.cachedReject++;
       }
 
+      // The free follower reading, where the search item supplied one. This is
+      // the whole economic case for clockworks: rejecting here costs nothing,
+      // rejecting after a profile scrape costs $0.005 a head.
+      const meta: SearchAuthorMeta | undefined = authorMeta.get(handle);
+      if (!outcome && usePreScrapeFilter && meta && meta.followerCount !== null) {
+        const status = importStatusFor(meta.followerCount, range);
+        if (status === 'out_of_range_low' || status === 'out_of_range_high') {
+          outcome = status === 'out_of_range_high' ? 'rejected_above_max' : 'rejected_below_floor';
+          funnel.preScrapeOutOfBand++;
+        }
+      }
+
       if (outcome) {
-        rows.push({ handle, outcome });
+        // Signals are recorded for every candidate, filtered on for none of
+        // them. The first run reports what they WOULD have excluded; deciding
+        // what to exclude comes after seeing those numbers.
+        rows.push({
+          handle,
+          outcome,
+          ...(meta ? {
+            authorFollowerCount: meta.followerCount,
+            authorTtSeller: meta.ttSeller,
+            authorSignature: meta.signature,
+            authorVerified: meta.verified,
+          } : {}),
+        });
       } else {
         toScrape.push(handle);
       }
@@ -204,7 +280,19 @@ export async function POST(request: NextRequest) {
     // no follower count, so they never enter the reject cache.
     await writeCandidates(runId, hashtag, platform, [
       ...rows,
-      ...toScrape.map(handle => ({ handle, outcome: 'not_scraped' as CandidateOutcome })),
+      ...toScrape.map(handle => {
+        const meta: SearchAuthorMeta | undefined = authorMeta.get(handle);
+        return {
+          handle,
+          outcome: 'not_scraped' as CandidateOutcome,
+          ...(meta ? {
+            authorFollowerCount: meta.followerCount,
+            authorTtSeller: meta.ttSeller,
+            authorSignature: meta.signature,
+            authorVerified: meta.verified,
+          } : {}),
+        };
+      }),
     ]);
 
     // ── Cancellation check B: the hashtag scrape is paid for, the profile
@@ -267,11 +355,31 @@ export async function POST(request: NextRequest) {
     await writeCandidates(runId, hashtag, platform, [...measuredRows, ...missingRows]);
     await touchRun(runId);
 
+    // DD2a: a sample to eyeball, because an in-band import is not a result.
+    // Country is NOT here: neither platform's profile payload carries it, and
+    // it only appears after the intelligence pass.
+    const importedSamples = imported.measured
+      .filter(m => m.status === 'active' && m.decision === 'import')
+      .slice(0, 15)
+      .map(m => {
+        const meta: SearchAuthorMeta | undefined = authorMeta.get(m.handle);
+        return {
+          handle: m.handle,
+          followerCount: m.followerCount,
+          signature: meta?.signature ?? null,
+          ttSeller: meta?.ttSeller ?? null,
+          verified: meta?.verified ?? null,
+        };
+      });
+
     return NextResponse.json({
       hashtag,
       platform,
       searchSource,
       extractionFailed: false,
+      halted: false,
+      authorMetaCoverage: coverage,
+      importedSamples,
       cancelled: imported.cancelled,
       timedOut: imported.timedOut,
       postsFound: posts.length,

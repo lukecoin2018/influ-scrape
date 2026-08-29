@@ -299,16 +299,43 @@ export function mapTikTokProfile(profile: any) {
  * route can call it directly instead of going through an HTTP hop that
  * middleware would redirect to /login on a server-to-server request.
  */
+export interface TikTokSearchOptions {
+  /**
+   * Search free text rather than tags.
+   *
+   * searchSection '/video' matches video DESCRIPTIONS, which is the point on
+   * TikTok: creators write keyword-dense descriptions because TikTok indexes
+   * them. '' would return the Top section and '/user' would match account names
+   * instead.
+   */
+  keyword?: boolean;
+  /**
+   * Optional recency window, e.g. 'THIS_MONTH'. A CHARGED add-on — roughly +35%
+   * on the search — and only valid with searchSection '/video'. Left unset by
+   * default so the first run has one unverified variable, not two.
+   */
+  dateFilter?: string;
+}
+
 export async function startTikTokHashtagScraper(
   hashtags: string[],
-  resultsPerPage: number = 50
+  resultsPerPage: number = 50,
+  options: TikTokSearchOptions = {}
 ): Promise<{ runId: string; datasetId?: string }> {
   const actorId = 'clockworks~tiktok-scraper';
-  const input = {
-    hashtags,
-    resultsPerPage,
-    proxyConfiguration: { useApifyProxy: true },
-  };
+  const input: Record<string, unknown> = options.keyword
+    ? {
+        searchQueries: hashtags,
+        searchSection: '/video',
+        resultsPerPage,
+        proxyConfiguration: { useApifyProxy: true },
+        ...(options.dateFilter ? { videoSearchDateFilter: options.dateFilter } : {}),
+      }
+    : {
+        hashtags,
+        resultsPerPage,
+        proxyConfiguration: { useApifyProxy: true },
+      };
 
   const response = await fetch(
     `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,

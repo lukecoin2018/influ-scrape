@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { DiscoveryConfig, DiscoveryMode, SearchSource } from '@/lib/types';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
-import { estimateDiscoveryCost } from '@/lib/discoveryCost';
+import { estimateDiscoveryCost, TIKTOK_SEARCH_RESULT_CAP } from '@/lib/discoveryCost';
 
 const PRESET_HASHTAGS = [
   '#beautyblogger', '#makeuptutorial', '#skincare', '#lifestyleblogger',
@@ -79,13 +79,17 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       // Keyword search is niche-only and Instagram-only for now, so anything
       // else is forced back to hashtags rather than silently sending a flag
       // down a path it has not been verified on.
-      searchSource: mode === 'niche' && platform === 'instagram' ? searchSource : 'hashtag',
+      searchSource: mode === 'niche' ? searchSource : 'hashtag',
       nicheKeywords: keywordsArray
     });
   };
 
+  // TikTok search caps a query at ~200 results, so offering 500 would promise
+  // depth the platform will not sell.
+  const resultsCap = platform === 'tiktok' ? TIKTOK_SEARCH_RESULT_CAP : 500;
+  const effectiveResults = Math.min(resultsPerHashtag, resultsCap);
   const hashtagCount = hashtags.split(',').filter(h => h.trim()).length;
-  const cost = estimateDiscoveryCost(hashtagCount, resultsPerHashtag, mode, platform);
+  const cost = estimateDiscoveryCost(hashtagCount, effectiveResults, mode, platform);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
@@ -123,7 +127,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       </div>
 
       {/* Search source — niche + Instagram only */}
-      {mode === 'niche' && platform === 'instagram' && (
+      {mode === 'niche' && (
         <div className="mb-6">
           <label className="block text-sm font-medium text-slate-700 mb-3">Search Source</label>
           <div className="grid grid-cols-2 gap-3">
@@ -154,7 +158,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
           </div>
           {searchSource === 'keyword' && (
             <p className="text-xs text-slate-500 mt-2">
-              Multi-word terms are supported. Instagram returns a slightly different dataset for
+              Multi-word terms are supported. Both platforms return a different dataset for
               keywords than for hashtags, so a term that finds posts but no creators is reported
               as an error rather than as an empty result.
             </p>
@@ -167,7 +171,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
         <label className="block text-sm font-medium text-slate-700 mb-2">
           {mode === 'sponsorship'
             ? 'Sponsorship Hashtags (comma-separated)'
-            : searchSource === 'keyword' && platform === 'instagram'
+            : searchSource === 'keyword'
               ? 'Keywords (comma-separated)'
               : 'Hashtags (comma-separated)'}
         </label>
@@ -178,16 +182,14 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
           rows={3}
           className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-500"
           placeholder={
-            searchSource === 'keyword' && mode === 'niche' && platform === 'instagram'
-              ? 'e.g., sustainable fashion, vintage denim'
+            searchSource === 'keyword' && mode === 'niche'
+              ? 'e.g., try on haul, grwm, unboxing, restock'
               : 'e.g., fashionblogger, streetstyle, ootd'
           }
         />
         <p className="text-sm text-slate-500 mt-2">
           {hashtags.split(',').filter(h => h.trim()).length}{' '}
-          {searchSource === 'keyword' && mode === 'niche' && platform === 'instagram'
-            ? 'keywords'
-            : 'hashtags'}
+          {searchSource === 'keyword' && mode === 'niche' ? 'keywords' : 'hashtags'}
         </p>
       </div>
 
@@ -257,22 +259,28 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       {/* Results Per Hashtag */}
       <div className="mb-6">
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          Results Per Hashtag: {resultsPerHashtag}
+          Results Per Term: {effectiveResults}
         </label>
         <input
           type="range"
           min="20"
-          max="500"
+          max={resultsCap}
           step="10"
-          value={resultsPerHashtag}
+          value={effectiveResults}
           onChange={(e) => setResultsPerHashtag(parseInt(e.target.value))}
           disabled={isRunning}
           className="w-full h-2 bg-gradient-to-r from-violet-200 to-violet-600 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
         />
         <div className="flex justify-between text-xs text-slate-500 mt-1">
           <span>20</span>
-          <span>500</span>
+          <span>{resultsCap}</span>
         </div>
+        {platform === 'tiktok' && (
+          <p className="text-xs text-slate-500 mt-2">
+            TikTok caps a search term at about {TIKTOK_SEARCH_RESULT_CAP} unique results, so the
+            shape is many terms shallow rather than few terms deep.
+          </p>
+        )}
       </div>
 
       {/* Estimated Cost */}

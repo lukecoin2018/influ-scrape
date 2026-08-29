@@ -44,7 +44,35 @@ export const ACTOR_PRICES_USD = {
   tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050 },
 } as const;
 
+/** Negative, NaN and non-finite inputs collapse to zero rather than to NaN. */
+function count(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
 export type CostPlatform = keyof typeof ACTOR_PRICES_USD;
+
+/**
+ * Results one TikTok search term can return, whatever is asked for.
+ *
+ * A vendor documents TikTok capping a single query string at roughly 200 unique
+ * results, and nobody contradicts it, so it is treated as a platform limit.
+ * The shape that follows is many terms shallow, not few terms deep.
+ *
+ * Without this the estimate multiplies terms by the slider freely and
+ * over-states any TikTok term above 200 — quoting for depth the platform will
+ * not sell.
+ */
+export const TIKTOK_SEARCH_RESULT_CAP = 200;
+
+/** Results per term actually obtainable on this platform. */
+export function effectiveResultsPerTerm(
+  resultsPerHashtag: number,
+  platform: CostPlatform,
+): number {
+  const asked = count(resultsPerHashtag);
+  return platform === 'tiktok' ? Math.min(asked, TIKTOK_SEARCH_RESULT_CAP) : asked;
+}
 
 /**
  * Unique post authors per post returned.
@@ -90,12 +118,6 @@ export interface DiscoveryCostEstimate {
   totalUsd: number;
 }
 
-/** Negative, NaN and non-finite inputs collapse to zero rather than to NaN. */
-function count(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.floor(value);
-}
-
 export function estimateDiscoveryCost(
   hashtagCount: number,
   resultsPerHashtag: number,
@@ -104,7 +126,7 @@ export function estimateDiscoveryCost(
 ): DiscoveryCostEstimate {
   const price = ACTOR_PRICES_USD[platform] ?? ACTOR_PRICES_USD.instagram;
 
-  const posts = count(hashtagCount) * count(resultsPerHashtag);
+  const posts = count(hashtagCount) * effectiveResultsPerTerm(resultsPerHashtag, platform);
   const authorProfiles = Math.round(posts * AUTHORS_PER_POST);
 
   // Sponsorship mode is Instagram-only, so brand profiles are always priced at
