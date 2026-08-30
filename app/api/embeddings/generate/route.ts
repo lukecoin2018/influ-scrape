@@ -193,9 +193,14 @@ export async function POST(request: NextRequest) {
         creatorIds.push({ id: c.id, handle: handleMap.get(c.id) || c.display_name || c.id });
       }
     } else if (mode === 'enriched_first') {
+      // Queue-building sweep, so it takes the import_status gate. Without it
+      // this picked up out-of-range and unmeasured profiles, which the other
+      // queue builders all exclude. The by-handle mode above deliberately does
+      // not gate — naming a handle is meant to reach it.
       const { data: enrichedProfiles } = await supabase
         .from('social_profiles')
         .select('creator_id, handle')
+        .eq('import_status', 'active')
         .not('enriched_at', 'is', null);
 
       const enrichedIds = new Set(

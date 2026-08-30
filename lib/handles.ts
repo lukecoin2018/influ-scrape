@@ -8,6 +8,18 @@
  * whole batch rather than the one bad entry.
  */
 
+/**
+ * Loose normalisation: lowercase, trim, drop a leading @. No validation.
+ *
+ * Distinct from normaliseHandleToken(), which also validates and returns null
+ * for anything illegal. Callers that are keying a lookup — matching a scraped
+ * handle against a database column — need the raw comparable form, because a
+ * handle that fails validation still has to match the row that stores it.
+ */
+export function looseHandle(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase().replace(/^@/, '');
+}
+
 /** Instagram's own limit. The brands column allows 64, but 30 is the real cap. */
 export const MAX_HANDLE_LENGTH = 30;
 export const MIN_HANDLE_LENGTH = 2;

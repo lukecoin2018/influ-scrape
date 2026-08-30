@@ -1,7 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import type { DiscoveryConfig, DiscoveryMode } from '@/lib/types';
+import type { DiscoveryConfig, DiscoveryMode, SearchSource } from '@/lib/types';
+import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
+import { estimateDiscoveryCost, TIKTOK_SEARCH_RESULT_CAP } from '@/lib/discoveryCost';
 
 const PRESET_HASHTAGS = [
   '#beautyblogger', '#makeuptutorial', '#skincare', '#lifestyleblogger',
@@ -34,14 +36,18 @@ const SPONSORSHIP_HASHTAGS = [
 interface SetupPanelProps {
   onStartDiscovery: (config: DiscoveryConfig) => void;
   isRunning: boolean;
+  /** Priced per platform: the TikTok actors cost roughly twice the Instagram ones. */
+  platform?: 'instagram' | 'tiktok';
 }
 
-export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelProps) {
+export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'instagram' }: SetupPanelProps) {
   const [mode, setMode] = useState<DiscoveryMode>('niche');
+  const [searchSource, setSearchSource] = useState<SearchSource>('hashtag');
+  const [haltOnLowCoverage, setHaltOnLowCoverage] = useState(true);
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
-  const [minFollowers, setMinFollowers] = useState(50000);
-  const [maxFollowers, setMaxFollowers] = useState(500000);
+  const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
+  const [maxFollowers, setMaxFollowers] = useState(DEFAULT_MAX_FOLLOWERS);
   const [resultsPerHashtag, setResultsPerHashtag] = useState(200);
 
   const handleModeChange = (newMode: DiscoveryMode) => {
@@ -71,11 +77,21 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
       maxFollowers,
       resultsPerHashtag,
       mode,
+      // Keyword search is niche-only and Instagram-only for now, so anything
+      // else is forced back to hashtags rather than silently sending a flag
+      // down a path it has not been verified on.
+      searchSource: mode === 'niche' ? searchSource : 'hashtag',
+      haltOnLowCoverage,
       nicheKeywords: keywordsArray
     });
   };
 
-  const estimatedCost = hashtags.split(',').length * 0.5 + (resultsPerHashtag / 20) * 3;
+  // TikTok search caps a query at ~200 results, so offering 500 would promise
+  // depth the platform will not sell.
+  const resultsCap = platform === 'tiktok' ? TIKTOK_SEARCH_RESULT_CAP : 500;
+  const effectiveResults = Math.min(resultsPerHashtag, resultsCap);
+  const hashtagCount = hashtags.split(',').filter(h => h.trim()).length;
+  const cost = estimateDiscoveryCost(hashtagCount, effectiveResults, mode, platform);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
@@ -112,10 +128,81 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
         </div>
       </div>
 
-      {/* Hashtags */}
+      {/* Search source — niche + Instagram only */}
+      {mode === 'niche' && (
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-slate-700 mb-3">Search Source</label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setSearchSource('hashtag')}
+              disabled={isRunning}
+              className={`px-4 py-3 rounded-lg font-medium transition-all ${
+                searchSource === 'hashtag'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <div className="text-sm"># Hashtag</div>
+              <div className="text-xs opacity-80 mt-1">Posts carrying the tag</div>
+            </button>
+            <button
+              onClick={() => setSearchSource('keyword')}
+              disabled={isRunning}
+              className={`px-4 py-3 rounded-lg font-medium transition-all ${
+                searchSource === 'keyword'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <div className="text-sm">🔎 Keyword</div>
+              <div className="text-xs opacity-80 mt-1">Free text, multi-word</div>
+            </button>
+          </div>
+          {searchSource === 'keyword' && (
+            <p className="text-xs text-slate-500 mt-2">
+              Multi-word terms are supported. Both platforms return a different dataset for
+              keywords than for hashtags, so a term that finds posts but no creators is reported
+              as an error rather than as an empty result.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* The free follower reading is the whole economic case for TikTok
+          search. Halting when it is absent stops a silent fallback to scraping
+          every author; turning that off is how you measure it once. */}
+      {platform === 'tiktok' && (
+        <div className="mb-6">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={haltOnLowCoverage}
+              onChange={e => setHaltOnLowCoverage(e.target.checked)}
+              disabled={isRunning}
+              className="mt-1 h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-700">
+                Halt if the search results carry no follower count
+              </span>
+              <span className="block text-xs text-slate-500 mt-1">
+                On by default. Without a follower count on the search item, every author needs a
+                paid profile scrape to find out — roughly $0.75 a term instead of $0.08. Turn it
+                off only to measure coverage on a deliberately small probe.
+              </span>
+            </span>
+          </label>
+        </div>
+      )}
+
+      {/* Search terms */}
       <div className="mb-6">
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          {mode === 'sponsorship' ? 'Sponsorship Hashtags (comma-separated)' : 'Hashtags (comma-separated)'}
+          {mode === 'sponsorship'
+            ? 'Sponsorship Hashtags (comma-separated)'
+            : searchSource === 'keyword'
+              ? 'Keywords (comma-separated)'
+              : 'Hashtags (comma-separated)'}
         </label>
         <textarea
           value={hashtags}
@@ -123,9 +210,16 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
           disabled={isRunning}
           rows={3}
           className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-500"
-          placeholder="e.g., fashionblogger, streetstyle, ootd"
+          placeholder={
+            searchSource === 'keyword' && mode === 'niche'
+              ? 'e.g., try on haul, grwm, unboxing, restock'
+              : 'e.g., fashionblogger, streetstyle, ootd'
+          }
         />
-        <p className="text-sm text-slate-500 mt-2">{hashtags.split(',').filter(h => h.trim()).length} hashtags</p>
+        <p className="text-sm text-slate-500 mt-2">
+          {hashtags.split(',').filter(h => h.trim()).length}{' '}
+          {searchSource === 'keyword' && mode === 'niche' ? 'keywords' : 'hashtags'}
+        </p>
       </div>
 
       {/* Niche Keywords (only in sponsorship mode) */}
@@ -194,22 +288,28 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
       {/* Results Per Hashtag */}
       <div className="mb-6">
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          Results Per Hashtag: {resultsPerHashtag}
+          Results Per Term: {effectiveResults}
         </label>
         <input
           type="range"
           min="20"
-          max="500"
+          max={resultsCap}
           step="10"
-          value={resultsPerHashtag}
+          value={effectiveResults}
           onChange={(e) => setResultsPerHashtag(parseInt(e.target.value))}
           disabled={isRunning}
           className="w-full h-2 bg-gradient-to-r from-violet-200 to-violet-600 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
         />
         <div className="flex justify-between text-xs text-slate-500 mt-1">
           <span>20</span>
-          <span>500</span>
+          <span>{resultsCap}</span>
         </div>
+        {platform === 'tiktok' && (
+          <p className="text-xs text-slate-500 mt-2">
+            TikTok caps a search term at about {TIKTOK_SEARCH_RESULT_CAP} unique results, so the
+            shape is many terms shallow rather than few terms deep.
+          </p>
+        )}
       </div>
 
       {/* Estimated Cost */}
@@ -218,10 +318,32 @@ export default function SetupPanel({ onStartDiscovery, isRunning }: SetupPanelPr
           <div>
             <div className="text-sm font-medium text-blue-900">Estimated Cost</div>
             <div className="text-xs text-blue-700">
-              Hashtag scraping: ${(hashtags.split(',').length * 0.5).toFixed(2)} · Profile scraping: ${((resultsPerHashtag / 20) * 3).toFixed(2)}
+              {cost.posts.toLocaleString()} posts ${cost.hashtagUsd.toFixed(2)} ·{' '}
+              {cost.authorProfiles.toLocaleString()} creator profiles ${cost.profileUsd.toFixed(2)}
+              {cost.brandProfiles > 0 && (
+                <> · {cost.brandProfiles.toLocaleString()} brand profiles ${cost.brandUsd.toFixed(2)}</>
+              )}
             </div>
+            {/* The pre-scrape filter's value, shown rather than buried in a
+                total: these are authors rejected on the search item's own
+                follower count, which costs nothing. */}
+            {cost.freeRejections > 0 && (
+              <div className="text-xs text-blue-600 mt-1">
+                {cost.authors.toLocaleString()} authors expected ·{' '}
+                <span className="font-medium">
+                  {cost.freeRejections.toLocaleString()} rejected free
+                </span>{' '}
+                on the search item, saving ~$
+                {(cost.freeRejections * 0.005).toFixed(2)}
+              </div>
+            )}
+            {cost.brandProfiles > 0 && (
+              <div className="text-xs text-blue-600 mt-1">
+                Brand profile count is an upper bound — the run de-duplicates brands, so actual spend will be lower.
+              </div>
+            )}
           </div>
-          <div className="text-2xl font-bold text-blue-600">${estimatedCost.toFixed(2)}</div>
+          <div className="text-2xl font-bold text-blue-600">${cost.totalUsd.toFixed(2)}</div>
         </div>
       </div>
 

@@ -12,17 +12,34 @@
 export const DEFAULT_MIN_FOLLOWERS = 30_000;
 export const DEFAULT_MAX_FOLLOWERS = 500_000;
 
+
 /**
  * Out-of-range is split by direction because the two groups have opposite
  * futures: a below-range creator can grow into range and be promoted back to
  * 'active', while an above-range one never will and is better treated as a
  * separate mega-creator population.
  *
- * Every pipeline filter tests `import_status = 'active'`, so both out-of-range
- * values are excluded identically without any filter needing to know about the
- * split.
+ * 'unknown_size' is not an out-of-range verdict at all — it means the follower
+ * count has not been measured yet (a failed or private scrape). It is kept
+ * distinct from 'out_of_range_low' because a scrape that returned nothing is
+ * not evidence of a small account, and conflating the two files unmeasured
+ * handles where nothing would ever distinguish them from genuine micro
+ * accounts. Unlike the out-of-range values it stays in the live tables rather
+ * than the archive: nothing reads the archive, so a row parked there would
+ * never be re-measured, whereas enrichment re-scrapes follower counts from
+ * social_profiles and is therefore the natural re-check path.
+ *
+ * Every QUEUE-BUILDING filter tests `import_status = 'active'`, so all three
+ * non-active values are excluded identically without any filter needing to
+ * know about the split. Note that several BY-HANDLE paths deliberately do not
+ * apply that gate (enrich 'specific' mode, embeddings by-handle, the
+ * intelligence override): naming a handle explicitly is meant to reach it.
  */
-export type ImportStatus = 'active' | 'out_of_range_high' | 'out_of_range_low';
+export type ImportStatus =
+  | 'active'
+  | 'out_of_range_high'
+  | 'out_of_range_low'
+  | 'unknown_size';
 
 export interface FollowerRange {
   min: number;
@@ -30,19 +47,37 @@ export interface FollowerRange {
 }
 
 /**
- * A follower_count of 0 or null means the scrape failed or the account is
- * private — not that the account is genuinely tiny. Those are treated as
- * unknown size and stay eligible: enrichment re-scrapes follower counts, so a
- * bad scrape self-corrects on the next pass, whereas an exclusion written on
- * the strength of one does not.
+ * A follower_count of 0, null or non-finite means the scrape failed or the
+ * account is private — not that the account is genuinely tiny.
+ *
+ * This used to be folded into isInFollowerRange(), which returned true for
+ * those and so stamped them 'active'. Brand-feed never exposed the problem:
+ * its archive holds no zero-follower rows at all, because a handle a brand
+ * tagged almost always resolves. Hashtag and keyword discovery has no such
+ * selection step and hits private, deleted and rate-limited profiles
+ * constantly, so an unmeasured count had to become sayable rather than being
+ * silently treated as a pass.
+ */
+export function hasMeasuredFollowerCount(
+  followerCount: number | null | undefined
+): followerCount is number {
+  return typeof followerCount === 'number'
+    && Number.isFinite(followerCount)
+    && followerCount > 0;
+}
+
+/**
+ * Whether a count is known to sit inside the band.
+ *
+ * An unmeasured count is not in range — it is not known to be anywhere. The
+ * only caller is importStatusFor(), which separates the unmeasured case first,
+ * so this never has to express "unknown" in a boolean.
  */
 export function isInFollowerRange(
   followerCount: number | null | undefined,
   range: FollowerRange
 ): boolean {
-  if (followerCount === null || followerCount === undefined || followerCount <= 0) {
-    return true;
-  }
+  if (!hasMeasuredFollowerCount(followerCount)) return false;
   return followerCount >= range.min && followerCount <= range.max;
 }
 
@@ -50,8 +85,9 @@ export function importStatusFor(
   followerCount: number | null | undefined,
   range: FollowerRange
 ): ImportStatus {
+  if (!hasMeasuredFollowerCount(followerCount)) return 'unknown_size';
   if (isInFollowerRange(followerCount, range)) return 'active';
-  return (followerCount as number) > range.max ? 'out_of_range_high' : 'out_of_range_low';
+  return followerCount > range.max ? 'out_of_range_high' : 'out_of_range_low';
 }
 
 /** True for either out-of-range direction. */
@@ -66,11 +102,18 @@ export function isOutOfRange(status: ImportStatus): boolean {
  * disagree — big on one platform, small on another — 'high' wins: being large
  * anywhere makes them a mega-creator rather than someone who might grow into
  * range.
+ *
+ * 'unknown_size' loses to every measured verdict, because a reading we have
+ * beats one we do not. A creator who is 18k on Instagram and unmeasured on
+ * TikTok is a below-range creator, not an unmeasured one. Only when NO profile
+ * has been measured does the creator itself become 'unknown_size'.
  */
 export function rollUpStatuses(statuses: ImportStatus[]): ImportStatus {
   if (statuses.length === 0) return 'active';
   if (statuses.some(s => s === 'active')) return 'active';
-  return statuses.some(s => s === 'out_of_range_high') ? 'out_of_range_high' : 'out_of_range_low';
+  if (statuses.some(s => s === 'out_of_range_high')) return 'out_of_range_high';
+  if (statuses.some(s => s === 'out_of_range_low')) return 'out_of_range_low';
+  return 'unknown_size';
 }
 
 /**
