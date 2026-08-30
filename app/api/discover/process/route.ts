@@ -46,32 +46,41 @@ import {
  */
 
 /**
- * Seconds this route may run for. THE ONE NUMBER TO CHANGE PER PLAN.
+ * Seconds Vercel is told this route may run for.
  *
- *   Vercel Hobby       60   <- hard platform ceiling
+ *   Vercel Hobby       60
  *   Vercel Pro        300
  *   Vercel Enterprise 900
  *
- * It must not exceed the plan's ceiling. If it does, the platform kills the
- * function while the budget below still believes it has time, so the graceful
- * partial-result path never runs and the request dies as a 504 — losing every
- * profile it already paid to scrape, which is exactly what the budget exists
- * to prevent.
+ * MUST BE A LITERAL. Next statically analyses segment config exports, so
+ * neither `= SOME_CONST` nor `= Number(process.env.X)` compiles — both fail the
+ * build with "Invalid segment configuration export detected". That is why this
+ * cannot be the env-driven value even though the budget below can be.
  *
- * Written as a literal and not derived from another binding: Next statically
- * analyses segment config exports, and `export const maxDuration = SOME_CONST`
- * fails the build with "Invalid segment configuration export detected". The
- * budget below reads it back, so this is still the single number to change.
+ * It is also INERT outside Vercel. Next does not enforce it; deployment
+ * platforms read it from the build output. On `next dev` or a self-hosted
+ * `next start` nothing consults it, so 300 here does not cap a local run.
  */
-export const maxDuration = 900;
+export const maxDuration = 300;
 
 /**
  * When to stop starting new work, leaving room to write results and respond.
  *
- * 30s of headroom: enough for the final candidate write-back and the response,
- * so the run ends by choice rather than by being killed.
+ * Env-driven so one number does not have to satisfy two environments. Vercel
+ * gets the default, derived from maxDuration; a local or self-hosted run sets
+ * DISCOVERY_BUDGET_SECONDS higher, which is what a 200-result TikTok keyword
+ * search needs — its search phase alone has been measured at 289s.
+ *
+ * A non-numeric or non-positive value falls back rather than producing NaN,
+ * which would make every deadline comparison false and disable the budget
+ * silently.
  */
-const BUDGET_MS = (maxDuration - 30) * 1000;
+function budgetSeconds(): number {
+  const raw = Number(process.env.DISCOVERY_BUDGET_SECONDS);
+  return Number.isFinite(raw) && raw > 0 ? raw : maxDuration - 30;
+}
+
+const BUDGET_MS = budgetSeconds() * 1000;
 
 /** Handles per Apify profile-scrape run. */
 const PROFILE_BATCH_SIZE = 50;
