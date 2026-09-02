@@ -11,6 +11,18 @@ const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
+/**
+ * A boolean the actor actually reported, or null when it reported nothing.
+ *
+ * Three-valued on purpose. `Boolean(post.isSponsored)` would collapse "absent"
+ * into false, making "we never looked" indistinguishable from "we looked and it
+ * was not sponsored" — which is the exact comparison these columns exist to
+ * support. Every Instagram post is the absent case.
+ */
+function actorFlag(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
 function extractHashtags(caption: string): string[] {
   const matches = caption.match(/#[\w\u00C0-\u024F]+/g) || [];
   return [...new Set(matches.map(h => h.slice(1).toLowerCase()))];
@@ -172,6 +184,25 @@ function mapTikTokPost(post: any, socialProfileId: string) {
     is_sponsored: detection.isSponsoredContent,
     sponsor_signals: detection.detectionSignals,
     detected_brands: detection.brandHandles,
+    // The actor's own verdict, stored beside ours rather than merged into it.
+    //
+    // clockworks/tiktok-profile-scraper returns isSponsored and isAd on every
+    // item and neither has ever been read. Measured over 886 items from past
+    // runs: the actor flags 13.1% as sponsored, detectBrandsInPost finds 2.3%,
+    // and the detector catches only 13 of the 116 the actor flags.
+    //
+    // NOT folded into is_sponsored, and this is load-bearing:
+    // lib/brandAggregation.ts re-runs detection over stored posts and writes
+    // is_sponsored back whenever the detector disagrees, so a merged value
+    // would be silently reverted on the next pass and the disagreement — the
+    // thing worth measuring — destroyed instead of recorded.
+    //
+    // Provenance is unverified: the actor documents neither field, so whether
+    // isSponsored is TikTok's paid-partnership disclosure or the actor's own
+    // heuristic is not yet known. Storing it verbatim is what makes that
+    // answerable.
+    actor_is_sponsored: actorFlag(post.isSponsored),
+    actor_is_ad: actorFlag(post.isAd),
   };
 }
 
