@@ -91,6 +91,17 @@ export interface CandidateRow {
   authorTtSeller?: boolean | null;
   authorSignature?: string | null;
   authorVerified?: boolean | null;
+  /**
+   * The search item's point of interest, where one was carried.
+   *
+   * xmolodtsov keyword search only — clockworks and Instagram emit nothing
+   * equivalent, so these stay null for those sources. Recorded, never filtered
+   * on: it is a geotag (where the video was made) rather than a statement
+   * about where the creator lives. See the migration for the distinction.
+   */
+  poiName?: string | null;
+  poiAddress?: string | null;
+  poiCityCode?: string | null;
 }
 
 /**
@@ -137,6 +148,9 @@ export async function writeCandidates(
       author_ttseller: row.authorTtSeller ?? null,
       author_signature: row.authorSignature ?? null,
       author_verified: row.authorVerified ?? null,
+      poi_name: row.poiName ?? null,
+      poi_address: row.poiAddress ?? null,
+      poi_city_code: row.poiCityCode ?? null,
     };
   });
 

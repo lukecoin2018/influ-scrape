@@ -44,6 +44,38 @@ export const ACTOR_PRICES_USD = {
   tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050 },
 } as const;
 
+/**
+ * TikTok KEYWORD search is a different actor and an order of magnitude cheaper.
+ *
+ * xmolodtsov/tiktok-search-scraper, measured from a completed run's own
+ * usageTotalUsd rather than read off a pricing page: 54 items for $0.01188,
+ * $0.000220 per result. The clockworks runs on the same day measured
+ * $0.00230-$0.00239 per result, so this is ~10.5x cheaper per result.
+ *
+ * Rounded UP to 0.00025 for the same reason the other prices read high: an
+ * estimate that reads low is worse than one that reads high.
+ *
+ * Only the SEARCH half changes. A profile scrape is still abe/
+ * tiktok-profile-scraper at $0.0050, so the pre-scrape follower filter carries
+ * exactly the same weight as before — arguably more, since the search is now
+ * cheap enough that the profile scrape dominates a run's cost completely.
+ */
+export const TIKTOK_KEYWORD_RESULT_USD = 0.00025;
+
+/**
+ * Per-result search price for a (platform, source) pair.
+ *
+ * Exists because price is no longer a property of the platform alone. Only one
+ * of the four combinations differs; the rest fall through to the table above.
+ */
+export function searchResultPrice(
+  platform: CostPlatform,
+  source: 'hashtag' | 'keyword' = 'hashtag',
+): number {
+  if (platform === 'tiktok' && source === 'keyword') return TIKTOK_KEYWORD_RESULT_USD;
+  return ACTOR_PRICES_USD[platform].hashtagResult;
+}
+
 /** Negative, NaN and non-finite inputs collapse to zero rather than to NaN. */
 function count(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 0;
