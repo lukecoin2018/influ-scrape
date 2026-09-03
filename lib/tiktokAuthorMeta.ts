@@ -130,6 +130,114 @@ export function extractAuthorMeta(posts: unknown[]): Map<string, SearchAuthorMet
   return byHandle;
 }
 
+/**
+ * Author metadata from an xmolodtsov/tiktok-search-scraper item.
+ *
+ * Same output shape as extractAuthorMeta so everything downstream — the
+ * pre-scrape band filter, the candidate log, the coverage summary — is
+ * unchanged. Only the reader differs.
+ *
+ * Measured on a real 54-item run: username and followers present on 54 of 54.
+ * That is why the coverage halt below never fires for this source. It is kept
+ * anyway rather than skipped: a halt that has never fired is cheap, and the
+ * thing it guards against is an actor silently changing its output, which is
+ * exactly the case where nobody would think to re-enable it.
+ *
+ * TWO FIELDS HAVE NO EQUIVALENT and resolve to null for every candidate:
+ *
+ *   signature  the bio. clockworks emits it; this actor's channel object is
+ *              avatar/followers/following/id/likes/name/url/username/
+ *              verified/videos and carries nothing bio-shaped. Accepted
+ *              deliberately when keyword search moved actors.
+ *   ttSeller   the TikTok Shop flag. Likewise absent.
+ *
+ * privateAccount is also absent; a private account simply does not appear in
+ * search results here.
+ */
+export function extractSearchAuthorMetaFromChannel(
+  posts: unknown[],
+): Map<string, SearchAuthorMeta> {
+  const byHandle = new Map<string, SearchAuthorMeta>();
+
+  for (const raw of posts) {
+    if (!raw || typeof raw !== 'object') continue;
+    const channel = (raw as Record<string, unknown>).channel as Record<string, unknown> | undefined;
+    if (!channel || typeof channel !== 'object') continue;
+
+    const handle = normaliseHandleToken(channel.username);
+    if (!handle) continue;
+
+    const existing = byHandle.get(handle);
+    const candidate: SearchAuthorMeta = {
+      handle,
+      followerCount: num(channel.followers),
+      signature: null,
+      ttSeller: null,
+      verified: bool(channel.verified),
+      privateAccount: null,
+    };
+
+    // Same merge rule as the clockworks reader: a handle appearing on several
+    // posts may carry the fields on only some of them, so a later bare item
+    // must not erase a reading an earlier one supplied.
+    byHandle.set(handle, existing ? {
+      handle,
+      followerCount: existing.followerCount ?? candidate.followerCount,
+      signature: existing.signature ?? candidate.signature,
+      ttSeller: existing.ttSeller ?? candidate.ttSeller,
+      verified: existing.verified ?? candidate.verified,
+      privateAccount: existing.privateAccount ?? candidate.privateAccount,
+    } : candidate);
+  }
+
+  return byHandle;
+}
+
+/**
+ * The point of interest a search item was tagged with, when it carried one.
+ *
+ * xmolodtsov only. A GEOTAG — where the video was made, not where the creator
+ * lives — so it is recorded and not filtered on. Measured at 24% coverage on a
+ * real run, against 18% for the bio-location mechanism it replaces.
+ */
+export interface SearchPoi {
+  name: string | null;
+  address: string | null;
+  cityCode: string | null;
+}
+
+/** One poi per author handle, first non-empty wins. */
+export function extractPoiByHandle(posts: unknown[]): Map<string, SearchPoi> {
+  const byHandle = new Map<string, SearchPoi>();
+
+  for (const raw of posts) {
+    if (!raw || typeof raw !== 'object') continue;
+    const post = raw as Record<string, unknown>;
+    const channel = post.channel as Record<string, unknown> | undefined;
+    const handle = normaliseHandleToken(channel?.username);
+    if (!handle) continue;
+
+    const poi = post.poi as Record<string, unknown> | undefined;
+    if (!poi || typeof poi !== 'object') continue;
+
+    const entry: SearchPoi = {
+      name: str(poi.poiName),
+      address: str(poi.address),
+      cityCode: str(poi.cityCode),
+    };
+    if (!entry.name && !entry.address && !entry.cityCode) continue;
+
+    const existing = byHandle.get(handle);
+    byHandle.set(handle, existing ? {
+      name: existing.name ?? entry.name,
+      address: existing.address ?? entry.address,
+      cityCode: existing.cityCode ?? entry.cityCode,
+    } : entry);
+  }
+
+  return byHandle;
+}
+
 export function summariseAuthorMetaCoverage(
   metas: Map<string, SearchAuthorMeta>,
   posts: unknown[] = [],
