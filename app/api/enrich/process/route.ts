@@ -487,9 +487,33 @@ export async function POST(request: NextRequest) {
         dataDetailLevel: detailedData ? 'detailedData' : 'basicData',
       };
     } else {
-      actorId = 'clockworks~tiktok-profile-scraper';
+      // xmolodtsov, not clockworks. Same output shape, half the price.
+      //
+      // Verified field-for-field against a clockworks dataset for the same
+      // creator (@katnimpa, 13 posts present in both). Every field the mapper
+      // reads is present on both, and the two actors AGREE on all of them:
+      // locationMeta.cityCode / .countryCode / .locationName, textLanguage,
+      // isSponsored, isAd, authorMeta.bioLink / .ttSeller — 13 of 13 identical.
+      //
+      // Cost, from each run's own usageTotalUsd rather than a pricing page:
+      //
+      //     clockworks   $0.001500 / item
+      //     xmolodtsov   $0.000750 / item     2.0x cheaper
+      //
+      // At 20 posts a creator that is $0.030 against $0.015, or roughly $106
+      // against $53 for a full pass over the 3,528 TikTok profiles.
+      //
+      // The only key clockworks returns and this does not is `isStory`, which
+      // nothing in app/ or lib/ reads.
+      //
+      // INPUT IS THE BARE HANDLE, NOT A URL. clockworks was sent
+      // `https://www.tiktok.com/@handle`; the only form verified against THIS
+      // actor is the bare username, which is what its own run used. The URL
+      // form is untested here, so it is not what ships — using the verified
+      // shape costs nothing and removes the unknown.
+      actorId = 'xmolodtsov~tiktok-profile-scraper';
       input = {
-        profiles: [`https://www.tiktok.com/@${handle}`],
+        profiles: [handle],
         resultsPerPage: postsPerCreator,
       };
     }
