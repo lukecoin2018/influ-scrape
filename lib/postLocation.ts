@@ -65,6 +65,24 @@ const str = (v: unknown): string | null =>
   typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
 
 /**
+ * A city code, or null when the actor is saying "no city".
+ *
+ * The actor sends the literal string "0" on country-level tags. Observed on
+ * @donnacayman, whose three geotagged posts all read:
+ *
+ *   {"address":"British Virgin Islands","city":"","cityCode":"0",
+ *    "countryCode":"3577718","locationName":"Spanish Town"}
+ *
+ * GeoNames ids start at 1, so "0" cannot be a place. Left as-is it is a VALUE
+ * rather than an absence, and every creator tagged at country level anywhere
+ * on earth collapses into one bogus "city 0" bucket in any GROUP BY.
+ */
+const cityCode = (v: unknown): string | null => {
+  const s = str(v);
+  return s === null || s === '0' ? null : s;
+};
+
+/**
  * locationMeta off one post item, or null when it carried none.
  *
  * Returns null rather than an object of nulls: 92% of posts have no place, and
@@ -77,7 +95,7 @@ export function extractPostPlace(post: unknown): PostPlace | null {
   if (!lm || typeof lm !== 'object') return null;
 
   const place: PostPlace = {
-    cityCode: str(lm.cityCode),
+    cityCode: cityCode(lm.cityCode),
     countryCode: str(lm.countryCode),
     name: str(lm.locationName),
     address: str(lm.address),
@@ -97,6 +115,10 @@ export const MIN_TAGGED_POSTS = 2;
 export const MIN_DOMINANCE = 0.6;
 
 export interface DerivedPlace {
+  /**
+   * Null on a COUNTRY-LEVEL answer — see the fallback in derivePlaceFromPosts.
+   * Null here does not mean "no place"; the whole object is null in that case.
+   */
   cityCode: string | null;
   countryCode: string | null;
   /** Best name seen for the winning code. Decoration; never the join key. */
@@ -107,6 +129,15 @@ export interface DerivedPlace {
   taggedPosts: number;
   /** Posts inspected, tagged or not. Context for how thin the evidence is. */
   totalPosts: number;
+  /**
+   * How specific the answer is.
+   *
+   * 'city'    a dominant cityCode was found
+   * 'country' no dominant city, but a dominant countryCode — the case the
+   *           actor's "0" sentinel produces, where it tagged a country and
+   *           named no city
+   */
+  level: 'city' | 'country';
 }
 
 /**
@@ -130,28 +161,70 @@ export function derivePlaceFromPosts(
   const minDominance = opts.minDominance ?? MIN_DOMINANCE;
 
   const totalPosts = places.length;
-  const tagged = places.filter((p): p is PostPlace => p !== null && p.cityCode !== null);
-  if (tagged.length < minTagged) return null;
 
-  const counts = new Map<string, number>();
-  for (const p of tagged) counts.set(p.cityCode!, (counts.get(p.cityCode!) ?? 0) + 1);
+  /** Highest count wins; lowest code breaks a tie, so the answer never depends
+   *  on the order the actor returned posts in. */
+  const dominant = (values: string[]): [string, number] | null => {
+    if (!values.length) return null;
+    const counts = new Map<string, number>();
+    for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1))[0];
+  };
 
-  // Deterministic on a tie: highest count, then lowest code. Without the
-  // tiebreak the winner would depend on Map insertion order, i.e. on the order
-  // the actor happened to return posts in.
-  const [topCode, topCount] = [...counts.entries()]
-    .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1))[0];
+  // ── City level, preferred ────────────────────────────────────────────────
+  const cityTagged = places.filter((p): p is PostPlace => p !== null && p.cityCode !== null);
+  if (cityTagged.length >= minTagged) {
+    const top = dominant(cityTagged.map(p => p.cityCode!));
+    if (top) {
+      const [topCode, topCount] = top;
+      const confidence = topCount / cityTagged.length;
+      if (confidence >= minDominance) {
+        const onTop = cityTagged.filter(p => p.cityCode === topCode);
+        return {
+          cityCode: topCode,
+          countryCode: onTop.find(p => p.countryCode)?.countryCode ?? null,
+          name: onTop.find(p => p.city)?.city ?? onTop.find(p => p.name)?.name ?? null,
+          confidence,
+          taggedPosts: cityTagged.length,
+          totalPosts,
+          level: 'city',
+        };
+      }
+    }
+  }
 
-  const confidence = topCount / tagged.length;
-  if (confidence < minDominance) return null;
+  // ── Country level, fallback ──────────────────────────────────────────────
+  //
+  // Reached when the actor tagged a country and named no city — it sends
+  // cityCode "0" for that, which extractPostPlace turns into null. Without
+  // this branch those creators are discarded, which throws away a correct
+  // answer: @donnacayman has three posts all tagged British Virgin Islands
+  // (countryCode 3577718) and no city on any of them.
+  //
+  // Also catches a creator who moves between cities within one country — the
+  // city vote fails the dominance bar, the country vote does not.
+  //
+  // Country is the market-facing field anyway, per the GeoNames audit: country
+  // codes resolved 5 of 5 and then 8 of 8, while city codes resolve at
+  // inconsistent granularity or not at all. A country-level answer is less
+  // specific, not less trustworthy.
+  const countryTagged = places.filter((p): p is PostPlace => p !== null && p.countryCode !== null);
+  if (countryTagged.length < minTagged) return null;
 
-  const onTop = tagged.filter(p => p.cityCode === topCode);
+  const topCountry = dominant(countryTagged.map(p => p.countryCode!));
+  if (!topCountry) return null;
+  const [topCC, ccCount] = topCountry;
+  const ccConfidence = ccCount / countryTagged.length;
+  if (ccConfidence < minDominance) return null;
+
+  const onCountry = countryTagged.filter(p => p.countryCode === topCC);
   return {
-    cityCode: topCode,
-    countryCode: onTop.find(p => p.countryCode)?.countryCode ?? null,
-    name: onTop.find(p => p.city)?.city ?? onTop.find(p => p.name)?.name ?? null,
-    confidence,
-    taggedPosts: tagged.length,
+    cityCode: null,
+    countryCode: topCC,
+    name: onCountry.find(p => p.city)?.city ?? onCountry.find(p => p.name)?.name ?? null,
+    confidence: ccConfidence,
+    taggedPosts: countryTagged.length,
     totalPosts,
+    level: 'country',
   };
 }
