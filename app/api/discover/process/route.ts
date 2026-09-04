@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   startHashtagScraper,
   startTikTokHashtagScraper,
+  startTikTokKeywordSearch,
   waitForRun,
   getDatasetItems,
 } from '@/lib/apify';
@@ -9,6 +10,8 @@ import { loadEntityExcludedHandles } from '@/lib/entityFilter';
 import { extractAuthorHandles } from '@/lib/discoveryPosts';
 import {
   extractAuthorMeta,
+  extractSearchAuthorMetaFromChannel,
+  extractPoiByHandle,
   summariseAuthorMetaCoverage,
   shouldHaltOnCoverage,
   MIN_FOLLOWER_COVERAGE,
@@ -107,6 +110,16 @@ export async function POST(request: NextRequest) {
     const platformP = parseEnumParam('platform', body.platform, ['instagram', 'tiktok'] as const, 'instagram');
     const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword'] as const, 'hashtag');
     const haltP = parseBoolParam('haltOnLowCoverage', body.haltOnLowCoverage, true);
+    /**
+     * ISO 3166-1 alpha-2 region for TikTok keyword search. Unset by default.
+     *
+     * Two caveats before reading any comparison of unset vs a value: the
+     * actor's own default is 'US', so unset IS 'US'; and its docs say TikTok
+     * keys results off the exit IP rather than off this field, so it may do
+     * nothing without a matching proxy.
+     */
+    const rawLocation = typeof body.location === 'string' ? body.location.trim().toUpperCase() : '';
+    const location = /^[A-Z]{2}$/.test(rawLocation) ? rawLocation : undefined;
     const resultsP = parseBoundedInt('resultsPerHashtag', body.resultsPerHashtag,
       { min: 1, max: 500, fallback: 100 });
 
@@ -145,11 +158,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 1. Hashtag / keyword scrape ────────────────────────────────────────
+    //
+    // THREE combinations, not four. Instagram uses one actor for both sources;
+    // TikTok uses clockworks for hashtags and xmolodtsov for keywords, because
+    // clockworks under-reads sparse free-text queries — measured on the same
+    // term and day, 29 results for $0.0677 against 54 for $0.0119.
     const { runId: scrapeRunId } = platform === 'tiktok'
-      ? await startTikTokHashtagScraper([hashtag], resultsPerHashtag, {
-          keyword: searchSource === 'keyword',
-          dateFilter,
-        })
+      ? (searchSource === 'keyword'
+          ? await startTikTokKeywordSearch([hashtag], resultsPerHashtag, { location })
+          : await startTikTokHashtagScraper([hashtag], resultsPerHashtag, {
+              keyword: false,
+              dateFilter,
+            }))
       : await startHashtagScraper([hashtag], resultsPerHashtag, searchSource === 'keyword');
 
     // Bounded by what remains of the budget, so a slow actor cannot consume
@@ -160,11 +180,25 @@ export async function POST(request: NextRequest) {
     if (!datasetId) throw new Error(`Hashtag scrape for #${hashtag} returned no dataset`);
 
     const posts = await getDatasetItems<unknown>(datasetId, resultsPerHashtag);
-    const candidates = extractAuthorHandles(posts, platform);
+    const candidates = extractAuthorHandles(posts, platform, searchSource);
 
     // Author metadata carried on the search item itself. TikTok only; Instagram
     // posts carry nothing about the account behind them.
-    const authorMeta = platform === 'tiktok' ? extractAuthorMeta(posts) : new Map();
+    //
+    // The two TikTok sources emit different shapes — clockworks nests it under
+    // authorMeta, xmolodtsov under channel — so the reader is chosen by the
+    // PAIR. Both produce SearchAuthorMeta, so nothing downstream branches.
+    const authorMeta = platform === 'tiktok'
+      ? (searchSource === 'keyword'
+          ? extractSearchAuthorMetaFromChannel(posts)
+          : extractAuthorMeta(posts))
+      : new Map();
+
+    // Point of interest, xmolodtsov only. Recorded for every candidate that
+    // carried one; nothing filters on it yet, by design.
+    const poiByHandle = platform === 'tiktok' && searchSource === 'keyword'
+      ? extractPoiByHandle(posts)
+      : new Map();
     const coverage = summariseAuthorMetaCoverage(authorMeta, posts);
     const halting = platform === 'tiktok' && shouldHaltOnCoverage(coverage, haltOnLowCoverage);
     // With the halt off and coverage partial, the filter still applies to the
@@ -249,6 +283,14 @@ export async function POST(request: NextRequest) {
       loadCachedMeasurements(candidates, platform),
     ]);
 
+    /** poi fields for a handle, or nulls. One place, three call sites. */
+    const poiFor = (handle: string) => {
+      const p = poiByHandle.get(handle);
+      return p
+        ? { poiName: p.name, poiAddress: p.address, poiCityCode: p.cityCode }
+        : {};
+    };
+
     const rows: CandidateRow[] = [];
     const toScrape: string[] = [];
     const funnel: Funnel = { ...empty, candidatesFound: candidates.length };
@@ -299,6 +341,7 @@ export async function POST(request: NextRequest) {
             authorSignature: meta.signature,
             authorVerified: meta.verified,
           } : {}),
+          ...poiFor(handle),
         });
       } else {
         toScrape.push(handle);
@@ -323,6 +366,7 @@ export async function POST(request: NextRequest) {
             authorSignature: meta.signature,
             authorVerified: meta.verified,
           } : {}),
+          ...poiFor(handle),
         };
       }),
     ]);
@@ -371,6 +415,10 @@ export async function POST(request: NextRequest) {
       authorTtSeller: meta?.ttSeller ?? null,
       authorSignature: meta?.signature ?? null,
       authorVerified: meta?.verified ?? null,
+      // Carried through for the same reason the author signals are: the write
+      // upserts on (run_id, platform, handle), so omitting these would blank
+      // the poi recorded before the profile scrape.
+      ...poiFor(m.handle),
       // Discovery archives nothing, so imported_archive_* are no longer
       // produced here; they remain in the taxonomy for the rows written before
       // this change. Direction is preserved in the cache because it decides

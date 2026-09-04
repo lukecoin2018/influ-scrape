@@ -396,6 +396,107 @@ export async function startTikTokHashtagScraper(
 }
 
 /**
+ * TikTok KEYWORD search. xmolodtsov~tiktok-search-scraper.
+ *
+ * A different actor from the hashtag path on purpose. clockworks is a hashtag
+ * scraper with a search mode bolted on, and it under-reads sparse free-text
+ * queries: measured on "miami swim", same day, same term, it returned 11 when
+ * asked for 200 and 29 when asked for 50, stopping at whichever page came back
+ * empty. Its page logs show the empty pages are flaky responses (retry
+ * histograms reaching the 4th and 8th attempt on sparse terms) rather than a
+ * real end of results, so where it stops is effectively random.
+ *
+ * Measured against this actor on that same term and day:
+ *
+ *   clockworks   29 items   $0.0677   $0.00233/result   104s
+ *   xmolodtsov   54 items   $0.0119   $0.00022/result    15s
+ *
+ * 1.9x the depth, a tenth of the price, seven times faster.
+ *
+ * The hashtag path stays on clockworks. It works well there — that is what it
+ * is built for — and switching it would be an unmeasured change.
+ *
+ * WHAT THIS COSTS US: the author object carries no bio. clockworks emits
+ * authorMeta.signature, which populated discovery_candidates.author_signature
+ * for every candidate including free rejects, and was the basis of the
+ * bio-location mechanism. That column goes NULL for keyword rows from here on.
+ * Accepted deliberately: the bio resolved a location for 18% of candidates and
+ * never reached city level. ttSeller is likewise absent.
+ */
+export interface TikTokKeywordSearchOptions {
+  /**
+   * ISO 3166-1 alpha-2 country code.
+   *
+   * DEFAULTS TO UNSET so the first runs can be compared against a pinned
+   * value. Note two things before reading a comparison:
+   *
+   *  1. The actor's OWN default is 'US', so leaving this unset is not
+   *     "no region" — it is US. A true comparison sets it to something else.
+   *  2. The actor's docs say TikTok keys results off the EXIT IP rather than
+   *     off this parameter, so it may do nothing without a matching proxy.
+   *     Treat a null result from the comparison as inconclusive, not negative.
+   */
+  location?: string;
+  /**
+   * One item per creator, decided server-side.
+   *
+   * Left false for now. On a sparse term it buys little — a measured run
+   * returned 54 items across 45 distinct authors, 1.20 posts/author — but on a
+   * broad term it converts a post budget into an author budget, which is what
+   * the funnel actually wants. To be tested on a broad term after this lands.
+   */
+  uniqueAuthors?: boolean;
+}
+
+export async function startTikTokKeywordSearch(
+  keywords: string[],
+  maxItems: number = 100,
+  options: TikTokKeywordSearchOptions = {}
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'xmolodtsov~tiktok-search-scraper';
+
+  const input: Record<string, unknown> = {
+    keywords,
+    maxItems,
+    // Adds `keyword` and `inputSource` to each item, which is how a result is
+    // attributed back to the term that found it when several are in flight.
+    includeSearchKeywords: true,
+    uniqueAuthors: options.uniqueAuthors === true,
+    // Sorting is applied by the actor AFTER fetching — the docs are explicit
+    // that TikTok ignores server-side sort — so this reorders what came back
+    // rather than changing what is fetched. Left at the default.
+    sortType: 'RELEVANCE',
+    // `expansion` is deliberately NOT set. Its pools (suggest / hashtag /
+    // music) are documented to multiply new creators per keyword by roughly
+    // 10x, which is the obvious lever for sparse terms — and a 10x cost
+    // multiplier. It wants its own measured change, not a default.
+    ...(options.location ? { location: options.location } : {}),
+  };
+
+  // relevanceThreshold is NOT set. It applies to the MUSIC expansion pool only
+  // — the fraction of a sound's first-page captions that must match before
+  // that sound is crawled — so with `expansion` unset it governs nothing. The
+  // 0.3 seen on the first console run was the actor's default doing nothing.
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start TikTok keyword search: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+  return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
+}
+
+/**
  * TikTok profile lookup. abe~tiktok-profile-scraper, matching the actor the
  * existing /api/tiktok/start-profile-scrape route uses.
  */
