@@ -3,6 +3,8 @@ import { supabase } from '@/lib/supabase';
 import { detectBrandsInPost } from '@/lib/brandDetection';
 import { recalculateCumulativeBrandFields, type StoredPostForBrandAgg } from '@/lib/brandAggregation';
 import { extractMentionsFromCaption, handlesFromActorList } from '@/lib/handles';
+import { extractPostPlace, derivePlaceFromPosts } from '@/lib/postLocation';
+import { extractPostLanguage, deriveLanguageFromPosts } from '@/lib/postLanguage';
 
 const RECENT_POSTS_WINDOW = 15;
 
@@ -10,6 +12,18 @@ const APIFY_API_BASE = 'https://api.apify.com/v2';
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 
 // ── Helper functions ──────────────────────────────────────────────────────────
+
+/**
+ * A boolean the actor actually reported, or null when it reported nothing.
+ *
+ * Three-valued on purpose. `Boolean(post.isSponsored)` would collapse "absent"
+ * into false, making "we never looked" indistinguishable from "we looked and it
+ * was not sponsored" — which is the exact comparison these columns exist to
+ * support. Every Instagram post is the absent case.
+ */
+function actorFlag(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
 
 function extractHashtags(caption: string): string[] {
   const matches = caption.match(/#[\w\u00C0-\u024F]+/g) || [];
@@ -138,6 +152,12 @@ function mapTikTokPost(post: any, socialProfileId: string) {
 
   const ownerUsername = post.authorMeta?.name || post.author?.uniqueId || post.uniqueId || '';
 
+  // Three fields the actor has always returned and nothing has ever read.
+  // Measured across completed runs: locationMeta on 8% of posts, textLanguage
+  // on 99%, authorMeta.bioLink on 86%.
+  const place = extractPostPlace(post);
+  const postLanguage = extractPostLanguage(post);
+
   const detection = detectBrandsInPost({
     ownerUsername,
     caption,
@@ -172,6 +192,37 @@ function mapTikTokPost(post: any, socialProfileId: string) {
     is_sponsored: detection.isSponsoredContent,
     sponsor_signals: detection.detectionSignals,
     detected_brands: detection.brandHandles,
+    // The actor's own verdict, stored beside ours rather than merged into it.
+    //
+    // clockworks/tiktok-profile-scraper returns isSponsored and isAd on every
+    // item and neither has ever been read. Measured over 886 items from past
+    // runs: the actor flags 13.1% as sponsored, detectBrandsInPost finds 2.3%,
+    // and the detector catches only 13 of the 116 the actor flags.
+    //
+    // NOT folded into is_sponsored, and this is load-bearing:
+    // lib/brandAggregation.ts re-runs detection over stored posts and writes
+    // is_sponsored back whenever the detector disagrees, so a merged value
+    // would be silently reverted on the next pass and the disagreement — the
+    // thing worth measuring — destroyed instead of recorded.
+    //
+    // Provenance is unverified: the actor documents neither field, so whether
+    // isSponsored is TikTok's paid-partnership disclosure or the actor's own
+    // heuristic is not yet known. Storing it verbatim is what makes that
+    // answerable.
+    actor_is_sponsored: actorFlag(post.isSponsored),
+    actor_is_ad: actorFlag(post.isAd),
+    // locationMeta, verbatim. Per POST this is only ~8% coverage; per CREATOR
+    // the distribution is bimodal — people geotag habitually or not at all —
+    // which is what makes the derived signal worth having. A dozen posts on
+    // one city code is a residency claim; one is a visit.
+    place_city_code: place?.cityCode ?? null,
+    place_country_code: place?.countryCode ?? null,
+    place_name: place?.name ?? null,
+    place_address: place?.address ?? null,
+    place_city: place?.city ?? null,
+    // NULL here means no determinable language: 'un' is never stored, so it
+    // cannot be mistaken for a language called "un".
+    post_language: postLanguage,
   };
 }
 
@@ -553,7 +604,42 @@ export async function POST(request: NextRequest) {
         }
       : null;
 
+    // 5.5 Derive the per-creator place and language from post history.
+    //
+    // TikTok only: the Instagram post actor returns neither field. Verified on
+    // 436 items from completed runs — not sparse, absent.
+    //
+    // Derived from THIS pass's posts rather than everything stored, so the
+    // signal describes the window that was actually scraped and moves with it.
+    // Both return null below their thresholds rather than a weak answer: one
+    // geotagged post is a visit, and a language guessed from two short captions
+    // filters a creator into the wrong market.
+    const derivedPlace = platform === 'tiktok'
+      ? derivePlaceFromPosts(rawPosts.map((p: any) => extractPostPlace(p)))
+      : null;
+    const derivedLanguage = platform === 'tiktok'
+      ? deriveLanguageFromPosts(rawPosts.map((p: any) => extractPostLanguage(p)))
+      : null;
+    // authorMeta.bioLink is the same for every post by one creator; take the
+    // first that carries one. Stored because it is free, NOT read by anything:
+    // of 29 measured creators with a link, 13 were linktr.ee and 5
+    // instagram.com against 4 affiliate platforms, so presence says nothing
+    // about whether a creator monetises.
+    const bioLink = platform === 'tiktok'
+      ? (rawPosts.find((p: any) => p?.authorMeta?.bioLink)?.authorMeta?.bioLink ?? null)
+      : null;
+
     // 6. Update social_profiles — enriched_at only advances on this successful pass.
+    //
+    // The place/language columns sit BESIDE detected_country / detected_language
+    // rather than overwriting them. Those hold bio inference; these hold post
+    // history. They are different kinds of evidence and a disagreement is worth
+    // keeping rather than resolving silently — the same reasoning that put
+    // actor_is_sponsored beside is_sponsored.
+    //
+    // Written unconditionally, including as null: a creator who was placed on a
+    // previous pass and has since fallen below the threshold should stop being
+    // reported as placed, not keep a stale answer.
     const { error: updateError } = await supabase
       .from('social_profiles')
       .update({
@@ -561,6 +647,18 @@ export async function POST(request: NextRequest) {
         enriched_at: new Date().toISOString(),
         posts_scraped_count: totalPostsCount ?? 0,
         engagement_rate: enrichmentData?.calculated_engagement_rate ?? null,
+        ...(platform === 'tiktok' ? {
+          place_city_code: derivedPlace?.cityCode ?? null,
+          place_country_code: derivedPlace?.countryCode ?? null,
+          place_name: derivedPlace?.name ?? null,
+          place_confidence: derivedPlace?.confidence ?? null,
+          place_tagged_posts: derivedPlace?.taggedPosts ?? null,
+          place_total_posts: derivedPlace?.totalPosts ?? null,
+          post_language: derivedLanguage?.language ?? null,
+          post_language_confidence: derivedLanguage?.confidence ?? null,
+          post_languages: derivedLanguage?.all ?? null,
+          bio_link: bioLink,
+        } : {}),
       })
       .eq('id', socialProfileId);
 
@@ -575,6 +673,8 @@ export async function POST(request: NextRequest) {
       postsSaved: mappedPosts.length,
       brandsFound: allBrandHandles.length,
       enrichmentData,
+      place: derivedPlace,
+      language: derivedLanguage,
     });
 
   } catch (error: any) {
