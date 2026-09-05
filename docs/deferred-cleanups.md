@@ -756,7 +756,11 @@ what that scrape ends up writing, for free.
     200-entry seed, as built                     ~$0.57
     200-entry seed, importing off the free item  ~$0.20
 
-**A two-thirds cut on the cheapest source in the pipeline.**
+**A two-thirds cut — and the change that would actually make seed expansion
+the cheapest source.** At present it is not: with the profile scrape it costs
+$0.00775 per in-band head against keyword search's $0.00591 (see
+`docs/seed-expansion-investigation.md`, corrected after ledger item 27 was
+fixed). Dropping the scrape takes it to **$0.00275**, less than half keyword's.
 
 ### Field by field, against what `mapTikTokProfile` actually writes
 
@@ -880,6 +884,19 @@ inside the seed-expansion commit: it changes a number the operator reads before
 spending, on a source seed expansion does not touch, and that deserves its own
 change and its own before/after.
 
-**Trigger:** next time the cost panel is touched. Add an assertion that
-`estimateDiscoveryCost(..., 'keyword')` differs from `(..., 'hashtag')` on
-TikTok — the missing test is what let a tested helper go unwired.
+**RESOLVED** in the commit that follows seed expansion. `hashtagUsd` now reads
+`searchResultPrice(platform, searchSource)`; `searchSource` was already a
+parameter after the seed work, so the change is one line. Three assertions were
+added to `lib/discoveryCost.test.ts` — on the ESTIMATE, not on the helper,
+which is the distinction that mattered: every existing test proved the helper
+was right and none proved it was used.
+
+**What the fix cost to find, recorded because it is the interesting part.**
+Wiring it broke a passing test in `lib/seedExpansion.test.ts` that asserted
+`seed.hashtagUsd < keyword.hashtagUsd` — "the following list is the cheaper
+fetch". It is not; it is four times dearer per result. That assertion had been
+green only because the estimate was quoting keyword at the clockworks rate, so
+the bug had propagated into a test AND into a claim in
+`docs/seed-expansion-investigation.md` that seed expansion was the cheapest
+source in the pipeline. Both are corrected. A mispriced constant does not stay
+in the pricing module; it ends up in the documents people make decisions from.

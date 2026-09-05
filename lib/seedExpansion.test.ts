@@ -96,12 +96,36 @@ test('a swapped edge is caught as an extraction failure, not a result', () => {
 
 test('seed cost is the following actor, not the search actor', () => {
   const seed = estimateDiscoveryCost(4, 200, 'niche', 'tiktok', 'seed');
-  const keyword = estimateDiscoveryCost(4, 200, 'niche', 'tiktok', 'keyword');
 
   assert.equal(seed.posts, 800);
   // 800 entries at $0.001 plus four run starts at $0.001.
   assert.equal(seed.hashtagUsd, 800 * SEED_RESULT_USD + 4 * SEED_RUN_START_USD);
-  assert.ok(seed.hashtagUsd < keyword.hashtagUsd, 'the following list is the cheaper fetch');
+});
+
+test('the following actor is DEARER per result than xmolodtsov keyword search', () => {
+  // This assertion is inverted from the one it replaces, and the inversion is
+  // the point.
+  //
+  // The original read `seed.hashtagUsd < keyword.hashtagUsd` and passed —
+  // because estimateDiscoveryCost was quoting TikTok keyword at the clockworks
+  // rate of $0.0037 instead of xmolodtsov's $0.00025. The seed branch looked
+  // four times cheaper than keyword search when it is in fact four times
+  // dearer. Wiring searchResultPrice made the test fail, which is the test
+  // doing its job: it had been asserting a bug.
+  //
+  // Seed expansion does not compete with keyword search on price per result.
+  // It competes on what comes back free — a bio on 90.7% of items against
+  // xmolodtsov's channel object, which carries nothing bio-shaped at all — and
+  // on a higher in-band rate. Both of those are worth paying 4x a very small
+  // number for; neither is a cost advantage, and calling it one was wrong.
+  const seed = estimateDiscoveryCost(1, 200, 'niche', 'tiktok', 'seed');
+  const keyword = estimateDiscoveryCost(1, 200, 'niche', 'tiktok', 'keyword');
+
+  assert.ok(
+    seed.hashtagUsd > keyword.hashtagUsd,
+    'the following list is the DEARER fetch; anything else means the keyword price regressed',
+  );
+  assert.equal(seed.hashtagUsd, 200 * SEED_RESULT_USD + SEED_RUN_START_USD);
 });
 
 test('seed cost is unaffected by the TikTok SEARCH cap', () => {

@@ -114,22 +114,65 @@ the second one failed.
 
 ## What survives, and it is worth having
 
-Everything measured about expansion as a *flat* source is good:
+Everything measured about expansion as a *flat* source is good — but **not on
+price per head, and an earlier draft of this document got that wrong.**
 
-| | Seed expansion | Keyword search |
+| per 200 results | Seed expansion | Keyword search (xmolodtsov) |
 |---|---|---|
+| search price per result | $0.0010 + $0.001/run | **$0.00025** |
+| search phase, 200 results | $0.201 | **$0.050** |
 | in-band rate | **36.5%** (34–44% per seed) | ~28% |
-| cost per in-band candidate | **$0.0028** | materially higher |
+| in-band heads from 200 | **73** | 55 |
+| per in-band head, search only | $0.00275 | **$0.00091** |
+| with the profile scrape at $0.005 | $0.566 → $0.00775/head | **$0.325 → $0.00591/head** |
 | free follower count | yes | yes |
-| free bio | **92%** | yes, since the xmolodtsov switch |
-| already known | **5.2%** of 515 | — |
+| **free bio** | **90.7%** | **none — 0%** |
+| free `ttSeller` | yes | no |
+| already known | 5.2% of 515 | — |
 | Spanish-language bios | 55.7% | — |
 
-So it is the **cheapest on-market candidate source in the pipeline**: one known
-creator converts into ~200 candidates, a third of which are in band, at about a
-third the per-head cost of anything else. It reliably produces Spanish-speaking
-creators, which is the market. It was never going to give Miami, and now we
-know it was not going to give Bogotá either.
+### The correction, and where it came from
+
+An earlier draft called seed expansion "the cheapest on-market candidate source
+in the pipeline" at "$0.0028 per in-band candidate ... a third the per-head cost
+of anything else". **The $0.0028 is right; the comparison was not.** It was made
+against clockworks at $0.0037 per result, because `estimateDiscoveryCost` was
+still quoting TikTok keyword search at the clockworks rate long after the actor
+had moved to xmolodtsov at $0.00025 — `searchResultPrice` existed, was tested,
+and nothing called it (ledger item 27).
+
+At the real prices, **keyword search is roughly 3x cheaper per in-band head**,
+and the following actor is 4x dearer per result. A unit test in
+`lib/seedExpansion.test.ts` was asserting the wrong direction and passing; it
+now asserts the true one, so a keyword-price regression fails a test.
+
+### What seed expansion is actually for, then
+
+Not price. Two things, both of which the free item gives and keyword search
+does not:
+
+1. **A bio on 90.7% of candidates.** xmolodtsov's `channel` object carries
+   nothing bio-shaped at all — no `signature`, no equivalent — which was
+   accepted knowingly when keyword search moved actors. Since the bio is what
+   the entire language and market read rests on, a source that returns one free
+   is doing something keyword search structurally cannot.
+2. **A higher in-band rate** — 36.5% against ~28% — so a larger share of what
+   is fetched is worth scraping at all.
+
+Both are worth paying 4x a very small number for. Seed expansion is a
+**complementary** source, not a cheaper one: keyword search finds more heads per
+dollar, seed expansion finds better-characterised ones. In absolute terms both
+are trivial — $0.20 a seed — so the choice is about what comes back, not budget.
+
+**And the free-item import (ledger 25) inverts the ranking.** Dropping the
+profile scrape takes seed expansion to $0.201 for 73 in-band heads,
+**$0.00275 each — less than half keyword's $0.00591** — because the free item
+already carries what the scrape would write. That is the change that would make
+this genuinely the cheapest source, and it is measured, not assumed.
+
+It reliably produces Spanish-speaking creators, which is the market. It was
+never going to give Miami, and now we know it was not going to give Bogotá
+either.
 
 **This is why the built mechanism is flat.** A fourth `searchSource`, seeds
 chosen by an operator from a queue, expanded once, marked `seed_expanded_at`,

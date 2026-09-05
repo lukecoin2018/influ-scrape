@@ -268,7 +268,14 @@ export function estimateDiscoveryCost(
     ? Math.round(posts * BRAND_PROFILES_PER_POST)
     : 0;
 
-  const hashtagUsd = posts * price.hashtagResult;
+  // searchResultPrice, NOT price.hashtagResult. Price is no longer a property
+  // of the platform alone: TikTok keyword search moved to xmolodtsov at
+  // $0.00025 against clockworks' $0.0037, and reading the table directly
+  // quoted every keyword run at roughly 15x its real search cost. The helper
+  // existed and was tested from the day of that swap; nothing called it.
+  // searchSource is narrowed to 'hashtag' | 'keyword' here by the seed branch's
+  // early return above.
+  const hashtagUsd = posts * searchResultPrice(platform, searchSource);
   const profileUsd = authorProfiles * price.profileResult;
   const brandUsd = brandProfiles * ACTOR_PRICES_USD.instagram.profileResult;
 
