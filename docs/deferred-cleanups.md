@@ -743,7 +743,12 @@ because nothing reads the code as a name.
 
 ---
 
-## 25. Seed expansion pays for a profile scrape it may not need
+## 25. QUEUED, NOT DEFERRED — import seed candidates off the free item
+
+**Status: next piece of work after the first seed run, decided 2026-09-05.**
+Listed here because this is where its history is, not because it is waiting for
+a trigger that may never come. The trigger is one run away and the decision
+rule is written below.
 
 **Where:** `lib/discoveryCost.ts` (`estimateSeedExpansionCost`),
 `app/api/discover/process/route.ts` step 4, `lib/apify.ts` (`mapTikTokProfile`).
@@ -814,12 +819,47 @@ whether the two disagree on a count. So after the first seed run:
 
 If nothing the funnel reads is lost, take the free path.
 
-**Why it was not done up front:** it makes seed imports structurally different
-from every other source's — a second import path with its own field mapping and
-its own failure modes, on a source whose first real run had not happened. The
-estimate charges for the scrape and therefore reads high, which is the right
-direction to be wrong in. Measure first: the same rule that killed the
-compounding loop.
+### Why this got promoted
+
+It was scoped as a saving. Fixing ledger item 27 showed it is more than that.
+
+With the profile scrape, seed expansion costs **$0.00775 per in-band head
+against keyword search's $0.00591** — it is the DEARER source, not the cheaper
+one, which is the opposite of what an earlier draft of
+`docs/seed-expansion-investigation.md` claimed. Without the scrape it is
+**$0.00275**, less than half keyword's.
+
+So this is not a two-thirds discount on an already-good source. **It is the
+difference between seed expansion being worth using on cost and not.** What it
+otherwise offers — a free bio on 90.7% of candidates where xmolodtsov's
+`channel` object carries nothing bio-shaped at all, plus `ttSeller` and a 36.5%
+in-band rate against ~28% — is real and is the reason to run it either way. But
+the cost argument only exists on the far side of this change.
+
+### The decision rule, written before the evidence
+
+Stated in advance so the result is not read to taste, per
+`docs/verification-rules.md`:
+
+**If the profile scrape returns nothing the funnel reads that the following
+item did not already carry, build it immediately.** Not "consider it", not
+"ledger it again".
+
+"Nothing the funnel reads" means every field in the item-side table above, plus
+any count disagreement large enough to change an `import_status` band decision.
+A field the scrape returns that nothing reads is not a reason to keep paying
+for it.
+
+**If the scrape does return something load-bearing**, name the field, say what
+reads it, and price keeping the scrape only for the candidates that need it.
+
+### Why it was not done up front
+
+It makes seed imports structurally different from every other source's — a
+second import path with its own field mapping and its own failure modes, on a
+source whose first real run had not happened. The estimate charges for the
+scrape and therefore reads high, which is the right direction to be wrong in.
+Measure first: the same rule that killed the compounding loop.
 
 ---
 

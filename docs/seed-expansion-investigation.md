@@ -164,7 +164,8 @@ Both are worth paying 4x a very small number for. Seed expansion is a
 dollar, seed expansion finds better-characterised ones. In absolute terms both
 are trivial — $0.20 a seed — so the choice is about what comes back, not budget.
 
-**And the free-item import (ledger 25) inverts the ranking.** Dropping the
+**And the free-item import (ledger 25, now QUEUED rather than deferred) inverts
+the ranking.** Dropping the
 profile scrape takes seed expansion to $0.201 for 73 in-band heads,
 **$0.00275 each — less than half keyword's $0.00591** — because the free item
 already carries what the scrape would write. That is the change that would make
