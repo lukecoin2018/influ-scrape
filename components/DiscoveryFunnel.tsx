@@ -15,7 +15,7 @@
 export interface HashtagResult {
   hashtag: string;
   platform: string;
-  searchSource?: 'hashtag' | 'keyword';
+  searchSource?: 'hashtag' | 'keyword' | 'seed';
   cancelled: boolean;
   timedOut: boolean;
   /** Posts came back but no author handle could be read from any of them. */
@@ -99,7 +99,8 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
     ?.authorMetaCoverage;
   const samples = results.flatMap(r => r.importedSamples ?? []);
   const isKeyword = results.some(r => r.searchSource === 'keyword');
-  const termWord = isKeyword ? 'keyword' : 'hashtag';
+  const isSeed = results.some(r => r.searchSource === 'seed');
+  const termWord = isSeed ? 'seed' : isKeyword ? 'keyword' : 'hashtag';
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -240,7 +241,7 @@ export default function DiscoveryFunnel({ results }: { results: HashtagResult[] 
                 className={`border-b border-slate-100 ${r.extractionFailed ? 'bg-red-50' : ''}`}
               >
                 <td className="px-3 py-2 font-medium text-slate-900">
-                  {r.searchSource === 'keyword' ? '' : '#'}{r.hashtag}
+                  {r.searchSource === 'keyword' ? '' : r.searchSource === 'seed' ? '@' : '#'}{r.hashtag}
                   {r.extractionFailed && (
                     <span className="ml-2 text-xs font-semibold text-red-700">extraction failed</span>
                   )}

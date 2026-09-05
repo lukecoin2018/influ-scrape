@@ -224,3 +224,35 @@ export async function recordAuthorMetaCoverage(
 
   if (error) console.error(`Failed to record coverage for run ${runId}:`, error.message);
 }
+
+/**
+ * Records that a seed's FOLLOWING list has been traversed.
+ *
+ * Written once the traversal is paid for and its items are in hand, not once
+ * the downstream import succeeds. The column answers "has this creator's
+ * following list been fetched", and it has, whatever the funnel then made of
+ * the candidates. Tying the mark to a successful import would leave a seed
+ * unmarked after a run whose profile phase timed out, and the next queue would
+ * offer it again — paying a second time for the same list.
+ *
+ * Scoped to (platform, handle) with an explicit equality on each. There is no
+ * subquery here and there is not going to be one: the incident on 2026-08-29
+ * came from an unscoped NOT EXISTS.
+ *
+ * Failure is logged, not thrown. Losing the mark costs one repeat traversal —
+ * about $0.20 — while throwing would fail a term whose scrape is already spent.
+ */
+export async function markSeedExpanded(
+  handle: string,
+  platform: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('social_profiles')
+    .update({ seed_expanded_at: new Date().toISOString() })
+    .eq('platform', platform)
+    .eq('handle', norm(handle));
+
+  if (error) {
+    console.error(`Failed to mark seed ${platform}/${handle} expanded:`, error.message);
+  }
+}

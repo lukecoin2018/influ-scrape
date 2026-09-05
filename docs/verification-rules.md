@@ -50,6 +50,25 @@ dev use different resolution paths and share `.next`. Reverted; ledger item 18.
 The dev check is the step that keeps getting skipped, and it is the only one
 that exercises what a person actually uses.
 
+## Run the sweep through `scripts/verify.sh`
+
+The two rules below — clear `.next` before each check, judge by exit code — were
+both written down here and both broken anyway. The `.next`-with-a-running-server
+one happened three times across two sessions.
+
+`scripts/verify.sh` enforces them instead of asking:
+
+```bash
+scripts/verify.sh          # test + tsc + build
+scripts/verify.sh --quick  # test + tsc
+```
+
+It refuses to run while a Next dev server is up (exit 2, deletes nothing),
+clears `.next` before each step, and judges every step by `$?`. The dev-server
+check is still yours to do by hand — see the section below on why a passing
+build is not evidence of it. The rules below remain the explanation of WHY;
+the script is what makes following them the default.
+
 ## Clear `.next` before every check, not just between modes
 
 `.next` state has produced misleading results repeatedly, in more than one way:
@@ -74,6 +93,45 @@ that exercises what a person actually uses.
 
 So: `rm -rf .next tsconfig.tsbuildinfo` before **each** check, not once at the
 start — and no dev server running while a sweep is in progress.
+
+## A shell that silently rewrites your query
+
+**In zsh, `"$ref:path"` is not what you wrote.** `:l` is a history-style
+modifier meaning "lowercase", so zsh consumes it:
+
+```bash
+b=keyword-search-actor
+git show "$b:lib/apify.ts"      # -> fatal: ambiguous argument
+                                #    'keyword-search-actorib/apify.ts'
+git show "${b}:lib/apify.ts"    # correct
+```
+
+With `2>/dev/null` on the end — which every loop over refs has — the error
+vanishes and the command substitution returns empty. A `grep -c` over that
+empty output returns 0, and a containment check built on it reports **"this
+branch does not contain the change"** for a branch that plainly does.
+
+That happened three times in a row on 2026-09-03 while establishing which
+branch carried a shipped actor switch, and each wrong answer was reported as
+fact. The direct, un-looped command had been run minutes earlier and showed the
+opposite.
+
+**Two rules:**
+
+1. **Always brace a ref used with a path: `"${ref}:path"`.** The other modifiers
+   (`:h`, `:t`, `:r`, `:e`, `:u`, `:s`) are the same hazard on any path
+   beginning with those letters — `${b}:head/...`, `${b}:test/...`,
+   `${b}:refs/...` all misparse unbraced.
+2. **When a loop produces a surprising negative, run one case directly before
+   believing it.** "Branch X does not contain the commit I just wrote" is
+   surprising. One `git show` outside the loop settles it in seconds, and it is
+   the same instinct as reading `$?` instead of grepping output: the cheap
+   direct check beats the convenient indirect one.
+
+This is the same failure class as the `grep -E "Compiled|Failed"` build check
+and the truncated-grep rule. **A check that cannot fail loudly will eventually
+report the wrong thing and be believed.** Prefer checks that error rather than
+return empty: dropping `2>/dev/null` would have surfaced this immediately.
 
 ## Verifying a range of commits
 

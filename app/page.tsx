@@ -115,6 +115,16 @@ export default function Home() {
     partnershipsLogged: 0,
   });
 
+  /**
+   * How a term is written in progress messages, per source.
+   *
+   * A seed is a handle and reads as @handle; a tag reads as #tag; a keyword is
+   * free text and takes no sigil. Getting this wrong is cosmetic, but "#colgo"
+   * in a log invites the reading that a hashtag was searched.
+   */
+  const termLabel = (term: string, source: DiscoveryConfig['searchSource']) =>
+    source === 'keyword' ? term : source === 'seed' ? `@${term}` : `#${term}`;
+
   // ── Niche mode: the converted path ──────────────────────────────────────
   //
   // One item per hashtag, each a call to /api/discover/process, which does both
@@ -140,7 +150,7 @@ export default function Home() {
       signal: AbortSignal,
       report: (message: string) => void,
     ): Promise<HashtagResult> => {
-      const label = item.searchSource === 'keyword' ? item.hashtag : `#${item.hashtag}`;
+      const label = termLabel(item.hashtag, item.searchSource);
       report(`${label} — scraping posts…`);
 
       const res = await fetch('/api/discover/process', {
@@ -186,7 +196,7 @@ export default function Home() {
     chunkSize: 1,
     delayMs: 1000,
     processItem: processHashtag,
-    labelFor: item => (item.searchSource === 'keyword' ? item.hashtag : `#${item.hashtag}`),
+    labelFor: item => termLabel(item.hashtag, item.searchSource),
   });
 
   useEffect(() => {
@@ -842,7 +852,8 @@ const brandRunId = brandData.runId;
                 <div className="flex justify-between text-xs text-slate-500 mt-2">
                   <span>
                     {runner.progress.done} of {runner.progress.total}{' '}
-                    {discoveryConfig?.searchSource === 'keyword' ? 'keywords' : 'hashtags'}
+                    {discoveryConfig?.searchSource === 'keyword' ? 'keywords'
+                      : discoveryConfig?.searchSource === 'seed' ? 'seeds' : 'hashtags'}
                     {runner.progress.failed > 0 && ` · ${runner.progress.failed} failed`}
                   </span>
                   {runId && <span className="font-mono">run {runId.slice(0, 8)}</span>}

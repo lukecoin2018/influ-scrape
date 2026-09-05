@@ -5,7 +5,16 @@
  * so could a sponsorship one. Folding this into discovery_mode would lose one
  * of the two dimensions.
  */
-export type SearchSource = 'hashtag' | 'keyword';
+/**
+ * What the terms in a Discovery run ARE.
+ *
+ * 'seed' is not a query. Its terms are TikTok handles of creators already held,
+ * whose FOLLOWING lists are traversed for new candidates. It is a flat source:
+ * a creator it discovers is never promoted to a seed, because expansion was
+ * measured and does not concentrate by place — see
+ * docs/seed-expansion-investigation.md.
+ */
+export type SearchSource = 'hashtag' | 'keyword' | 'seed';
 
 export interface DiscoveryConfig {
   hashtags: string[];

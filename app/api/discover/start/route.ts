@@ -7,6 +7,7 @@ import {
   parseBoolParam,
   firstError,
 } from '@/lib/requestParams';
+import { normaliseHandleToken } from '@/lib/handles';
 
 /**
  * Opens a Discovery run and returns its queue of search terms.
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
     // guard carried a stale platform clause; nothing reported the change.
     const platformP = parseEnumParam('platform', body.platform, ['instagram', 'tiktok'] as const, 'instagram');
     const modeP = parseEnumParam('mode', body.mode, ['niche', 'sponsorship'] as const, 'niche');
-    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword'] as const, 'hashtag');
+    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword', 'seed'] as const, 'hashtag');
     const haltP = parseBoolParam('haltOnLowCoverage', body.haltOnLowCoverage, true);
 
     const paramError = firstError(platformP, modeP, sourceP, haltP);
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
 
     const platform = (platformP as { value: 'instagram' | 'tiktok' }).value;
     const mode = (modeP as { value: 'niche' | 'sponsorship' }).value;
-    const requestedSource = (sourceP as { value: 'hashtag' | 'keyword' }).value;
+    const requestedSource = (sourceP as { value: 'hashtag' | 'keyword' | 'seed' }).value;
     const haltOnLowCoverage = (haltP as { value: boolean }).value;
 
     // Sponsorship mode has no keyword path — its brand extraction is
@@ -50,27 +51,77 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+
+    // Seed expansion exists on TikTok only, because the actor that traverses a
+    // following list is a TikTok actor and Instagram has no equivalent in the
+    // pipeline. Rejected rather than downgraded to a hashtag run — the failure
+    // that lib/requestParams exists to prevent was exactly a silent rewrite of
+    // this parameter.
+    if (requestedSource === 'seed' && platform !== 'tiktok') {
+      return NextResponse.json(
+        { error: 'searchSource="seed" is TikTok only; no Instagram following-list actor is wired up.' },
+        { status: 400 },
+      );
+    }
+    if (requestedSource === 'seed' && mode !== 'niche') {
+      return NextResponse.json(
+        { error: 'searchSource="seed" is only supported in niche mode.' },
+        { status: 400 },
+      );
+    }
     const searchSource = requestedSource;
 
-    const hashtags: string[] = Array.isArray(body.hashtags)
-      ? ([...new Set(
-          body.hashtags
+    const rawTerms: unknown[] = Array.isArray(body.hashtags) ? body.hashtags : [];
+
+    // Seed terms are HANDLES, not queries, so they are validated rather than
+    // merely trimmed. A malformed handle silently dropped would shorten the
+    // queue without saying so, and the run would look like it had simply found
+    // less — the same class of quiet substitution as a rewritten parameter.
+    const rejectedSeeds: string[] = [];
+    const hashtags: string[] = searchSource === 'seed'
+      ? [...new Set(rawTerms.map((h: unknown) => {
+          const raw = String(h ?? '').trim();
+          const handle = normaliseHandleToken(raw);
+          if (!handle && raw) rejectedSeeds.push(raw);
+          return handle;
+        }).filter((h): h is string => !!h))]
+      : ([...new Set(
+          rawTerms
             // Keywords keep their spaces; only tags get the leading # stripped.
             .map((h: unknown) => {
               const raw = String(h ?? '').trim().toLowerCase();
               return searchSource === 'keyword' ? raw : raw.replace(/^#/, '');
             })
             .filter(Boolean),
-        )] as string[])
-      : [];
+        )] as string[]);
 
-    if (hashtags.length === 0) {
+    if (rejectedSeeds.length > 0) {
       return NextResponse.json(
-        { error: 'At least one hashtag or keyword is required' },
+        {
+          error:
+            `${rejectedSeeds.length} seed handle(s) are not valid TikTok usernames: ` +
+            `${rejectedSeeds.slice(0, 10).join(', ')}. ` +
+            `Seed terms are handles of creators already held, not search queries.`,
+        },
         { status: 400 },
       );
     }
 
+    if (hashtags.length === 0) {
+      return NextResponse.json(
+        {
+          error: searchSource === 'seed'
+            ? 'At least one seed handle is required'
+            : 'At least one hashtag or keyword is required',
+        },
+        { status: 400 },
+      );
+    }
+
+    // In seed mode this is maxFollowingPerProfile — how deep into each seed's
+    // following list to go. Same knob, same bounds, different unit; the seed's
+    // own following_count is the real ceiling and the actor returns fewer
+    // without erroring.
     const resultsP = parseBoundedInt('resultsPerHashtag', body.resultsPerHashtag,
       { min: 1, max: 500, fallback: 100 });
     if (!resultsP.ok) return NextResponse.json({ error: resultsP.error }, { status: 400 });
