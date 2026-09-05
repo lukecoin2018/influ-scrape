@@ -52,6 +52,12 @@ function instagramAuthor(post: Record<string, unknown>): unknown {
  * `authorMeta.nickName` is the DISPLAY name and must not be used as a handle —
  * that conflation is what produced the stored fragments "levi", "lor" and
  * "the" from captions.
+ *
+ * ALSO the reader for seed expansion. clockworks/tiktok-followers-scraper emits
+ * `{authorMeta, connectedTo}` where `authorMeta` is the FOLLOWED account — the
+ * candidate — and `connectedTo` is the seed. Reading `authorMeta.name` here is
+ * therefore right for both, and reading `connectedTo` would return the seed
+ * itself on every item. `lib/seedExpansion.test.ts` pins that.
  */
 function tiktokAuthor(post: Record<string, unknown>): unknown {
   const authorMeta = post.authorMeta as Record<string, unknown> | undefined;
@@ -60,14 +66,22 @@ function tiktokAuthor(post: Record<string, unknown>): unknown {
 }
 
 /**
- * Which actor produced these posts.
+ * Which actor produced these items.
  *
- * Three combinations exist, not four: Instagram uses one actor for both
- * sources, TikTok uses clockworks for hashtags and xmolodtsov for keywords.
- * Naming the pair rather than the platform is what stops a shape change being
- * mistaken for an empty result — see the header.
+ * Four combinations exist, not six: Instagram uses one actor for both its
+ * sources, TikTok uses clockworks for hashtags, xmolodtsov for keywords, and
+ * clockworks/tiktok-followers-scraper for seed expansion. Naming the pair
+ * rather than the platform is what stops a shape change being mistaken for an
+ * empty result — see the header.
+ *
+ * 'seed' reads the SAME field as 'hashtag' and that is not a coincidence worth
+ * collapsing. The following-list actor nests the followed account under
+ * `authorMeta` exactly as clockworks nests the poster, so `tiktokAuthor` reads
+ * both. Keeping the value distinct means a future divergence in either actor
+ * has a place to be expressed, and it keeps the caller honest about which
+ * actor it just paid.
  */
-export type PostSource = 'hashtag' | 'keyword';
+export type PostSource = 'hashtag' | 'keyword' | 'seed';
 
 export function extractAuthorHandles(
   posts: unknown[],
@@ -84,6 +98,8 @@ export function extractAuthorHandles(
     if (!raw || typeof raw !== 'object') continue;
     const post = raw as Record<string, unknown>;
 
+    // 'hashtag' and 'seed' both land on tiktokAuthor; only keyword search
+    // reads a different shape.
     const value = platform === 'tiktok'
       ? (source === 'keyword' ? tiktokSearchAuthor(post) : tiktokAuthor(post))
       : instagramAuthor(post);

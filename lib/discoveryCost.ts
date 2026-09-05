@@ -1,4 +1,4 @@
-import type { DiscoveryMode } from './types';
+import type { DiscoveryMode, SearchSource } from './types';
 
 /**
  * Cost estimation for a Discovery run.
@@ -151,6 +151,53 @@ export const TIKTOK_AUTHORS_PER_POST = 0.98;
 export const TIKTOK_PRESCRAPE_REJECT_RATE = 0.47;
 
 /**
+ * Seed expansion prices, clockworks/tiktok-followers-scraper, FREE tier.
+ *
+ * Read from the actor's own PAY_PER_EVENT pricing metadata on 2026-09-05, not
+ * from a listing page:
+ *
+ *   result       $0.0010 per follower/following profile returned
+ *   actor-start  $0.0010 flat, once per run
+ *
+ * Kept out of ACTOR_PRICES_USD because that table is keyed by platform and
+ * this is a third actor on a platform that already has two. Folding it in
+ * would have made `tiktok.hashtagResult` mean two different numbers depending
+ * on a parameter the table does not see.
+ */
+export const SEED_RESULT_USD = 0.0010;
+export const SEED_RUN_START_USD = 0.0010;
+
+/**
+ * Following-list entries actually returned per entry ASKED FOR.
+ *
+ * One, and this is not a placeholder: the actor returns one item per followed
+ * account and each is a distinct account, so unlike a hashtag page there are no
+ * repeat authors to discount. The ratio exists so the seed branch reads like
+ * the others rather than hiding a bare 1.
+ *
+ * What DOES cut the yield is the seed's own following_count — asking 200 of an
+ * account following 16 returns 16. That is not modelled here because the
+ * estimate does not know the seeds; the seed queue filters on following_count
+ * instead, and the panel shows the per-seed ceiling.
+ */
+export const SEED_AUTHORS_PER_RESULT = 1.0;
+
+/**
+ * Share of expansion candidates rejected before any profile scrape.
+ *
+ * Measured across the four seeds run on 2026-09-04 — colgo, anni_jara,
+ * daniblog133, camila_mirasmithb — 515 candidates, of which 34-44% per seed
+ * fell inside a 30k-500k band. 0.635 is the complement of the 36.5% pooled
+ * in-band rate, which is itself slightly BETTER than keyword search's ~28%.
+ *
+ * As with the search-side figure this varies with the band, and it lumps
+ * together the free rejections the funnel actually makes: out-of-band on the
+ * item's own `fans`, already known (5.2% of the 515), and entity-excluded. So
+ * it reads high on a database that already holds many of a seed's followings.
+ */
+export const SEED_PRESCRAPE_REJECT_RATE = 0.635;
+
+/**
  * Distinct brand profiles scraped per sponsored post, in Sponsorship mode.
  *
  * UNMEASURED AT RUN SCALE — treat as an upper bound. 1.94 is distinct brands
@@ -188,8 +235,18 @@ export function estimateDiscoveryCost(
   hashtagCount: number,
   resultsPerHashtag: number,
   mode: DiscoveryMode,
-  platform: CostPlatform = 'instagram'
+  platform: CostPlatform = 'instagram',
+  /**
+   * Seed expansion is priced by a different actor with a different unit, so it
+   * branches out before any of the search-side arithmetic. Defaulted, so every
+   * existing caller and test is unaffected.
+   */
+  searchSource: SearchSource = 'hashtag',
 ): DiscoveryCostEstimate {
+  if (searchSource === 'seed') {
+    return estimateSeedExpansionCost(hashtagCount, resultsPerHashtag);
+  }
+
   const price = ACTOR_PRICES_USD[platform] ?? ACTOR_PRICES_USD.instagram;
 
   const posts = count(hashtagCount) * effectiveResultsPerTerm(resultsPerHashtag, platform);
@@ -211,7 +268,14 @@ export function estimateDiscoveryCost(
     ? Math.round(posts * BRAND_PROFILES_PER_POST)
     : 0;
 
-  const hashtagUsd = posts * price.hashtagResult;
+  // searchResultPrice, NOT price.hashtagResult. Price is no longer a property
+  // of the platform alone: TikTok keyword search moved to xmolodtsov at
+  // $0.00025 against clockworks' $0.0037, and reading the table directly
+  // quoted every keyword run at roughly 15x its real search cost. The helper
+  // existed and was tested from the day of that swap; nothing called it.
+  // searchSource is narrowed to 'hashtag' | 'keyword' here by the seed branch's
+  // early return above.
+  const hashtagUsd = posts * searchResultPrice(platform, searchSource);
   const profileUsd = authorProfiles * price.profileResult;
   const brandUsd = brandProfiles * ACTOR_PRICES_USD.instagram.profileResult;
 
@@ -225,5 +289,60 @@ export function estimateDiscoveryCost(
     profileUsd,
     brandUsd,
     totalUsd: hashtagUsd + profileUsd + brandUsd,
+  };
+}
+
+/**
+ * Seed expansion: seeds x following-list entries.
+ *
+ * Priced separately rather than as a branch inside the main expression because
+ * three of its four terms differ: the unit is a followed account not a post,
+ * the actor charges a per-run start fee the search actors do not, and the
+ * TikTok 200-result search cap does not apply — that cap is a property of
+ * TikTok SEARCH, and a following list is not a search. Sharing one expression
+ * would have meant four conditionals inside it, each of which is a place for
+ * the two to be confused.
+ *
+ * The `posts` field carries following-list entries here. It is the same
+ * quantity in the same position — what the first actor is asked to return —
+ * and the panel labels it per source, so the shape stays uniform for callers.
+ *
+ * NOT MODELLED, and worth knowing before this number is trusted downward: the
+ * profile scrape is priced in full at $0.005 a head, exactly as for the search
+ * sources. The following-scraper item already carries fans, signature,
+ * verified, ttSeller, bioLink, following, video and heart — nearly everything
+ * the profile scrape returns — so importing straight off the free item would
+ * remove that term entirely and take a 200-entry seed from about $0.57 to
+ * $0.20. That is a real saving and a separate change: it would make seed
+ * imports structurally different from every other source's, and nobody has
+ * chosen that yet. Until they do, this estimate reads high on purpose.
+ */
+function estimateSeedExpansionCost(
+  seedCount: number,
+  followingPerSeed: number,
+): DiscoveryCostEstimate {
+  const seeds = count(seedCount);
+  const posts = seeds * count(followingPerSeed);
+
+  const authors = Math.round(posts * SEED_AUTHORS_PER_RESULT);
+  const freeRejections = Math.round(authors * SEED_PRESCRAPE_REJECT_RATE);
+  const authorProfiles = authors - freeRejections;
+
+  // One Apify run per seed: the runner processes terms one at a time, so a
+  // ten-seed queue is ten runs and ten start fees, not one.
+  const hashtagUsd = posts * SEED_RESULT_USD + seeds * SEED_RUN_START_USD;
+  const profileUsd = authorProfiles * ACTOR_PRICES_USD.tiktok.profileResult;
+
+  return {
+    posts,
+    authors,
+    freeRejections,
+    authorProfiles,
+    // Sponsorship mode has no seed path; brand scraping never happens here.
+    brandProfiles: 0,
+    hashtagUsd,
+    profileUsd,
+    brandUsd: 0,
+    totalUsd: hashtagUsd + profileUsd,
   };
 }

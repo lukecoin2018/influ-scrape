@@ -523,3 +523,60 @@ export async function startTikTokProfileScraper(
   const data: ApifyRunResponse = await response.json();
   return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
 }
+
+/**
+ * Seed expansion: one creator's FOLLOWING list.
+ *
+ * clockworks~tiktok-followers-scraper, the same actor that returns followers —
+ * the direction is chosen by which of the two maxima is non-zero, so
+ * maxFollowersPerProfile MUST be sent as 0 or the run also pays for the
+ * follower side. Following, not followers, is the deliberate direction: who a
+ * creator chose to follow is a curated list; who follows them is not.
+ *
+ * Input shape verified against the four measurement runs on 2026-09-04:
+ *   {"maxFollowersPerProfile":0,"maxFollowingPerProfile":200,"profiles":["colgo"]}
+ *
+ * Each dataset item is { authorMeta, connectedTo, connectionType }, where
+ * authorMeta is the FOLLOWED account — the candidate — and connectedTo is the
+ * seed. authorMeta carries name, fans, signature, verified and ttSeller, i.e.
+ * exactly the fields extractAuthorMeta() and extractAuthorHandles() already
+ * read off a search item, which is why the rest of the Discovery funnel needs
+ * no seed-specific branch.
+ *
+ * A seed's ceiling is its own following_count: asking for 200 from an account
+ * following 16 returns 16. That is a property of the seed, not a failure, and
+ * it is why the queue filters on following_count.
+ *
+ * $0.001 per profile returned plus $0.001 to start, at the FREE tier — the
+ * cheapest per-candidate source in the pipeline.
+ */
+export async function startTikTokFollowingScraper(
+  handles: string[],
+  maxFollowingPerProfile: number = 200,
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'clockworks~tiktok-followers-scraper';
+  const input = {
+    profiles: handles.map(h => h.replace(/^@/, '').toLowerCase()),
+    // Zero, always. See above: a non-zero value here silently doubles the bill
+    // and returns the wrong population.
+    maxFollowersPerProfile: 0,
+    maxFollowingPerProfile,
+  };
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start TikTok following scraper: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+  return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
+}

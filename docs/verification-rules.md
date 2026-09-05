@@ -40,6 +40,68 @@ statically analyses segment config exports and requires a literal.
 
 The same failure mode applies to every tool here. Match nothing; read `$?`.
 
+## The class: a check that passes while measuring the wrong thing
+
+The `Compiled` grep is not a one-off. It is the founding instance of the failure
+mode that has cost the most time on this project, and it is worth naming as a
+class so the next one is recognised as a member rather than rediscovered.
+
+**A check that passes is evidence only about the thing it actually measured.
+When what it measures has drifted from what you believe it measures, it goes on
+passing, and its passing is what stops anyone looking.** A failing check is
+loud. A check that is green about the wrong subject is silent, and silence is
+indistinguishable from correctness until something downstream breaks.
+
+Every instance so far, with what each was really measuring:
+
+| Believed to check | Actually measured | How it surfaced |
+|---|---|---|
+| The build succeeded | That the word `Compiled` appeared in stdout | Six commits reported green, all exit 1 |
+| The field is read | That an accessor was written — `displayName`, `profileImage`, `taggedAccounts` never existed | `full_name` populated on 1 of 3,458 creators |
+| The commit is sound | The working tree, which contained an unstaged file the commit did not | `0c0cbd3` failed on Vercel, missing export |
+| The tallies are right | Totals, which matched, over unordered pagination that skipped and duplicated rows | Per-value counts off by two, `Nyc` 114 against 116 |
+| `searchResultPrice` is correct | That the helper is correct — nothing asserted it is CALLED | Keyword runs quoted 15x high for weeks |
+| Seed expansion is cheaper | A comparison against a price the estimate was computing wrongly | The test went RED when the pricing bug was fixed |
+
+The last two are the same event and the most instructive pair, because the
+second was a **unit test that had to be inverted**. `lib/seedExpansion.test.ts`
+asserted `seed.hashtagUsd < keyword.hashtagUsd` — "the following list is the
+cheaper fetch" — and passed, green, from the day it was written. It passed only
+because `estimateDiscoveryCost` was quoting TikTok keyword search at the
+clockworks rate instead of xmolodtsov's. The following actor is four times
+*dearer* per result, not cheaper.
+
+So the test was not failing to catch the bug. **It was asserting it.** And
+because a test is the thing you point at to show a claim is checked, the wrong
+comparison propagated out of the pricing module and into
+`docs/seed-expansion-investigation.md`, where seed expansion was described as
+the cheapest candidate source in the pipeline — a sentence a spend decision
+would have been made from. A mispriced constant does not stay in the file that
+holds it.
+
+### What actually catches this class
+
+Not more checks. Checks of a different kind:
+
+- **Assert on the caller, not only on the helper.** Four assertions proved
+  `searchResultPrice` returned the right number. None proved anything used it.
+  The three added to `discoveryCost.test.ts` assert on the *estimate*, which is
+  what a person reads.
+- **A green check must name its subject.** `scripts/verify.sh` prints
+  `HEAD (sha)` or `the WORKING TREE — this does not describe any commit`,
+  because the earlier version printed neither and the reader supplied the
+  flattering assumption.
+- **Prefer the exit code, the row count, the constraint** — signals produced by
+  the system rather than interpreted from its output.
+- **Treat a green test that has never gone red as unverified.** A test written
+  alongside the code it tests, passing from the first run, has not yet
+  demonstrated it can fail. When a change makes such a test fail, the first
+  question is whether the test was right — not how to make it pass again.
+- **When a number appears in prose, trace it back to what computed it.** Both
+  documented claims that turned out wrong were numbers copied from a passing
+  computation into a sentence.
+
+
 ## A passing build is not evidence the dev server works
 
 `turbopack.root` was pinned to silence a workspace-root warning, verified with
@@ -49,6 +111,25 @@ dev use different resolution paths and share `.next`. Reverted; ledger item 18.
 
 The dev check is the step that keeps getting skipped, and it is the only one
 that exercises what a person actually uses.
+
+## Run the sweep through `scripts/verify.sh`
+
+The two rules below — clear `.next` before each check, judge by exit code — were
+both written down here and both broken anyway. The `.next`-with-a-running-server
+one happened three times across two sessions.
+
+`scripts/verify.sh` enforces them instead of asking:
+
+```bash
+scripts/verify.sh          # test + tsc + build
+scripts/verify.sh --quick  # test + tsc
+```
+
+It refuses to run while a Next dev server is up (exit 2, deletes nothing),
+clears `.next` before each step, and judges every step by `$?`. The dev-server
+check is still yours to do by hand — see the section below on why a passing
+build is not evidence of it. The rules below remain the explanation of WHY;
+the script is what makes following them the default.
 
 ## Clear `.next` before every check, not just between modes
 
@@ -74,6 +155,45 @@ that exercises what a person actually uses.
 
 So: `rm -rf .next tsconfig.tsbuildinfo` before **each** check, not once at the
 start — and no dev server running while a sweep is in progress.
+
+## A shell that silently rewrites your query
+
+**In zsh, `"$ref:path"` is not what you wrote.** `:l` is a history-style
+modifier meaning "lowercase", so zsh consumes it:
+
+```bash
+b=keyword-search-actor
+git show "$b:lib/apify.ts"      # -> fatal: ambiguous argument
+                                #    'keyword-search-actorib/apify.ts'
+git show "${b}:lib/apify.ts"    # correct
+```
+
+With `2>/dev/null` on the end — which every loop over refs has — the error
+vanishes and the command substitution returns empty. A `grep -c` over that
+empty output returns 0, and a containment check built on it reports **"this
+branch does not contain the change"** for a branch that plainly does.
+
+That happened three times in a row on 2026-09-03 while establishing which
+branch carried a shipped actor switch, and each wrong answer was reported as
+fact. The direct, un-looped command had been run minutes earlier and showed the
+opposite.
+
+**Two rules:**
+
+1. **Always brace a ref used with a path: `"${ref}:path"`.** The other modifiers
+   (`:h`, `:t`, `:r`, `:e`, `:u`, `:s`) are the same hazard on any path
+   beginning with those letters — `${b}:head/...`, `${b}:test/...`,
+   `${b}:refs/...` all misparse unbraced.
+2. **When a loop produces a surprising negative, run one case directly before
+   believing it.** "Branch X does not contain the commit I just wrote" is
+   surprising. One `git show` outside the loop settles it in seconds, and it is
+   the same instinct as reading `$?` instead of grepping output: the cheap
+   direct check beats the convenient indirect one.
+
+This is the same failure class as the `grep -E "Compiled|Failed"` build check
+and the truncated-grep rule. **A check that cannot fail loudly will eventually
+report the wrong thing and be believed.** Prefer checks that error rather than
+return empty: dropping `2>/dev/null` would have surfaced this immediately.
 
 ## Verifying a range of commits
 

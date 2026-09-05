@@ -5,6 +5,7 @@ import {
   AUTHORS_PER_POST,
   ACTOR_PRICES_USD,
   BRAND_PROFILES_PER_POST,
+  TIKTOK_KEYWORD_RESULT_USD,
 } from './discoveryCost.ts';
 
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -186,4 +187,49 @@ test('L2: prices are the ones read from each actor', () => {
 
 test('L2: the first-run configuration is still under a dollar on Instagram', () => {
   assert.ok(estimateDiscoveryCost(2, 100, 'niche', 'instagram').totalUsd < 1);
+});
+
+/**
+ * The assertion whose absence let a tested helper go unwired.
+ *
+ * searchResultPrice was added with the keyword-actor swap and covered by four
+ * assertions in discoverySources.test.ts. estimateDiscoveryCost never called
+ * it, so the panel quoted every TikTok keyword run at the clockworks rate —
+ * about 15x the real search cost — and no test noticed, because every test
+ * proved the helper was RIGHT and none proved it was USED.
+ *
+ * These assert on the estimate, not on the helper. That is the whole point.
+ */
+test('a TikTok keyword estimate uses the keyword actor price, not the hashtag one', () => {
+  const keyword = estimateDiscoveryCost(6, 200, 'niche', 'tiktok', 'keyword');
+  const hashtag = estimateDiscoveryCost(6, 200, 'niche', 'tiktok', 'hashtag');
+
+  assert.notEqual(
+    keyword.hashtagUsd, hashtag.hashtagUsd,
+    'the two TikTok sources are different actors at different prices',
+  );
+  assert.equal(keyword.hashtagUsd, 1200 * TIKTOK_KEYWORD_RESULT_USD);
+  assert.equal(hashtag.hashtagUsd, 1200 * ACTOR_PRICES_USD.tiktok.hashtagResult);
+  assert.ok(
+    keyword.hashtagUsd < hashtag.hashtagUsd / 10,
+    'the keyword actor is an order of magnitude cheaper; a quote that is not is the old bug',
+  );
+});
+
+test('the profile scrape is priced the same whichever TikTok source found the handle', () => {
+  // Only the SEARCH price differs between the two actors. The profile scrape
+  // is the same actor either way, so wiring the search price must not have
+  // moved this.
+  const keyword = estimateDiscoveryCost(6, 200, 'niche', 'tiktok', 'keyword');
+  const hashtag = estimateDiscoveryCost(6, 200, 'niche', 'tiktok', 'hashtag');
+
+  assert.equal(keyword.profileUsd, hashtag.profileUsd);
+  assert.equal(keyword.authorProfiles, hashtag.authorProfiles);
+});
+
+test('Instagram prices both its sources identically — one actor, two flags', () => {
+  const keyword = estimateDiscoveryCost(6, 200, 'niche', 'instagram', 'keyword');
+  const hashtag = estimateDiscoveryCost(6, 200, 'niche', 'instagram', 'hashtag');
+
+  assert.deepEqual(keyword, hashtag);
 });

@@ -599,3 +599,344 @@ would isolate it. Worth knowing before concluding that the platform is what
 matters, because term choice is far cheaper to change than platform.
 
 **Trigger:** after the keyword-vs-hashtag comparison, which isolates variable 3.
+
+---
+
+## 22. `fetchAllRows` documents its ordering contract but does not enforce it
+
+**Where:** `lib/supabasePaging.ts`.
+
+**The contract:** the docstring says `makeQuery` "must apply a deterministic
+`.order()`", because without a stable sort Postgres may return rows in a
+different order per page, duplicating some and dropping others.
+
+**Audited 2026-09-02, and every caller complies.** Fifteen real call sites
+across nine files; fourteen order by `id` and one by `alias`, and in every case
+that column is the table's primary key. **No past measurement taken through `fetchAllRows` is wrong.**
+
+The bug that prompted the audit was in an ad-hoc measurement script written for
+the location investigation, which paged `v_creator_summary` with a `Range`
+header and no `order` at all. Per-value tallies came back different on repeat
+runs (`Nyc` at 114 and then 116) while the total still summed correctly to
+6,026 — so the error was invisible in the one number being used to check it.
+
+**Two things are still worth fixing:**
+
+1. **The contract is prose.** `fetchAllRows` cannot see whether `.order()` was
+   applied — the builder is opaque to it — so this is enforced by every author
+   reading the docstring. That worked fifteen times out of fifteen, which is
+   evidence it is a good docstring, not evidence the class of error is closed.
+   The failure it prevents is silent and the check that would catch it (a total
+   that matches) does not catch it.
+
+2. ~~**One call site orders by a non-unique column.**~~ **WITHDRAWN — this was
+   wrong.** `loadAliases` in `lib/brandFeedQueue.ts` orders `brand_aliases` by
+   `alias`, which was flagged here as a non-key column crossing a page boundary
+   by twenty rows. **`alias` IS the primary key of `brand_aliases`** — confirmed
+   from PostgREST's OpenAPI description, which names it as such. It is unique by
+   constraint, the paging is deterministic, and there is nothing to fix.
+
+   Recorded rather than deleted because the reasoning error is the reusable
+   part: "not named `id`" was treated as "not a key". Uniqueness was then
+   measured empirically (5,020 of 5,020 distinct) and that result was read as
+   luck rather than as the constraint it actually was — the measurement agreed
+   with the truth and was still interpreted backwards. The table is not defined
+   in any tracked migration, which is what made the key invisible from the repo;
+   the fix was to ask the database, not to infer from the column name.
+
+**Trigger:** (2) is closed — no change needed. For (1), the honest options are a
+runtime assertion (hard: the builder is opaque) or a lint rule. Neither is worth
+building today given fifteen out of fifteen compliance, but if a paging bug ever
+appears in a real call site, stop relying on the docstring.
+
+**Note on the audit itself:** the first pass at it used the regex
+`fetchAllRows\s*(?:<[^>]*>)?\s*\(`, which cannot match the nested generic in
+`fetchAllRows<Record<string, unknown>>` and silently skipped a call site. Redone
+with a bracket-depth walk. Counting call sites with a regex over TypeScript
+generics is the same class of error as grepping build output.
+
+**Rule for ad-hoc measurement, which is where this actually bit:** any bulk read
+of this database for measurement needs a stable sort, and **a total that matches
+is not evidence the breakdown does.** Cross-check per-value figures with
+`Prefer: count=exact`, which does not depend on pagination at all.
+
+---
+
+## 23. RESOLVED — the `.next`-with-a-running-server failure is now guarded
+
+**Was:** `rm -rf .next` while `next dev` runs against the same directory
+corrupts the Turbopack cache (item 19), producing module-resolution failures
+that get misattributed to whatever config changed most recently. It is written
+up in item 19 AND in docs/verification-rules.md, and it happened **three times
+across two sessions anyway** — twice in the session that added this entry.
+
+**Why the doc was the wrong instrument.** The rule is only consulted when
+someone is already thinking about `.next`. The failure happens when they are
+thinking about something else and reach for `rm -rf .next` as a reflex. A rule
+that has to be recalled at exactly the moment attention is elsewhere is not
+doing the job, however clearly it is written.
+
+**Resolved by `scripts/verify.sh`**, which makes both recurring failures
+structurally impossible rather than documented:
+
+- It **refuses to run** if a Next dev server is up — exits 2, deletes nothing,
+  prints the offending PIDs and how to stop it. Verified by running it with a
+  server up and confirming `.next` survived.
+- It clears `.next` before **each** step rather than once at the start.
+- Every step is judged by `$?`. Nothing greps output. It exits non-zero if any
+  step did, so it cannot report a failing build as green.
+
+Usage: `scripts/verify.sh` (test + tsc + build) or `--quick` (skips the build).
+
+**Deliberately NOT automated: the dev-server check.** It needs a person to load
+a page and look at it, and a script that pretended to cover it would recreate
+the exact "a passing build means it works" error that item 18 records. The
+script prints the reminder and stops.
+
+**Trigger:** if the failure recurs despite this, the next step is a git
+pre-commit hook or an alias, because it would mean the sweep is being run by
+hand rather than through the script.
+
+
+---
+
+## 24. `locationMeta.cityCode` is not always a city
+
+**Where:** `lib/postLocation.ts`, `creator_posts.place_city_code`,
+`social_profiles.place_city_code`.
+
+The field looks like a city identifier and is not. Measured against the
+GeoNames dumps across every value seen in real datasets, it takes **four**
+different kinds of value:
+
+1. **A city.** New York City 5128581, Toronto 6167865, Miami 4164138,
+   Brooklyn 5110302, Las Vegas 5506956, Medellín 3674962, Orlando 4167147,
+   Los Angeles 5368361, Providence 5224151 — and also Halton, population
+   2,218, and Frostproof FL, which TikTok itself labelled "Florida".
+2. **An admin1 region.** 1609348 is Bangkok the *province*; 6697808 is the
+   South Aegean *region*, on a post TikTok named "Naxos".
+3. **The literal string `"0"`**, meaning "country-level tag, no city". Found on
+   @donnacayman, whose three geotagged posts are all British Virgin Islands
+   with no city. GeoNames ids start at 1, so this is a sentinel, not a place.
+   Fixed on extraction; the rows written before that are repaired by
+   docs/migrations/2026-09-03-null-zero-city-code.sql.
+4. **An id GeoNames does not have.** 52200211 (Sharm el-Sheikh) and 77400241
+   (Muskoka Lakes) are far outside GeoNames' range — TikTok's own place ids for
+   locations GeoNames lacks.
+
+**`countryCode` has none of these problems.** Every value seen has resolved
+exactly, now 8 for 8: United States, Canada, Thailand, British Virgin Islands,
+United Kingdom, Colombia, Greece, Egypt.
+
+**The rule:** group on `cityCode` for identity, because that is all the
+dominance calculation needs. Filter and report on `countryCode`. **Do not
+resolve `cityCode` to a name and present it as a city** — for cases 2 and 4
+that is wrong, and for case 3 it was actively harmful before the fix.
+
+**A city-level market filter built on these codes would have failed silently**,
+which is why the market-facing column is the country one.
+
+**Trigger:** if city-level filtering ever becomes necessary, resolve codes
+against the GeoNames dumps at ingest and store the feature class alongside, so
+a region can be told from a city. Until then the ambiguity costs nothing
+because nothing reads the code as a name.
+
+---
+
+## 25. QUEUED, NOT DEFERRED — import seed candidates off the free item
+
+**Status: next piece of work after the first seed run, decided 2026-09-05.**
+Listed here because this is where its history is, not because it is waiting for
+a trigger that may never come. The trigger is one run away and the decision
+rule is written below.
+
+**Where:** `lib/discoveryCost.ts` (`estimateSeedExpansionCost`),
+`app/api/discover/process/route.ts` step 4, `lib/apify.ts` (`mapTikTokProfile`).
+
+Seed expansion reuses `importScrapedProfiles` exactly as the hashtag and
+keyword sources do, so every in-band candidate costs $0.005 for a TikTok
+profile scrape. The following-list item it came from already carries most of
+what that scrape ends up writing, for free.
+
+    200-entry seed, as built                     ~$0.57
+    200-entry seed, importing off the free item  ~$0.20
+
+**A two-thirds cut — and the change that would actually make seed expansion
+the cheapest source.** At present it is not: with the profile scrape it costs
+$0.00775 per in-band head against keyword search's $0.00591 (see
+`docs/seed-expansion-investigation.md`, corrected after ledger item 27 was
+fixed). Dropping the scrape takes it to **$0.00275**, less than half keyword's.
+
+### Field by field, against what `mapTikTokProfile` actually writes
+
+Coverage measured over the **516 items already paid for** across the four seed
+runs of 2026-09-04 — not a sample of one, and not an assumption.
+
+| Written to `social_profiles` | From the profile scrape | On the free following item | Coverage |
+|---|---|---|---|
+| `handle` | `profile.username` | `authorMeta.name` | **100%** |
+| `full_name` | `tagline` | `authorMeta.nickName` | **100%** |
+| `bio` | `profile.bio` | `authorMeta.signature` | **90.7%** |
+| `follower_count` | `followers.raw` | `authorMeta.fans` | **100%** |
+| `following_count` | `following.raw` | `authorMeta.following` | **100%** |
+| `posts_count` | `videos.raw` | `authorMeta.video` | **100%** |
+| `is_verified` | hardcoded `false` | `authorMeta.verified` | **100%** |
+| `profile_pic_url` | `profileImage \|\| image` | `authorMeta.avatar` | **100%** |
+| `profile_url` | `profileUrl \|\| url` | `authorMeta.profileUrl` | **100%** |
+| `platform_data.likes_count` | `likes.raw` | `authorMeta.heart` | **100%** |
+| `platform_data.video_count` | `videos.raw` | `authorMeta.video` | **100%** |
+| `engagement_rate` | always `null` | absent | — both null |
+| `is_business_account` | absent on TikTok | absent | — both absent |
+| `category_name` | absent on TikTok | absent | — both absent |
+| `website` | always `''` | `authorMeta.bioLink` | **0% on candidates** |
+
+**Two of these rows favour the free item outright.** `is_verified` is
+*hardcoded to false* by `mapTikTokProfile`, so the scrape has never written a
+real verification flag; the free item carries the actual boolean on 100% of
+items. `full_name` currently comes from `tagline`, and of 3,458 TikTok-primary
+creators exactly **one** ever got a `full_name` from it — `nickName` is present
+on 100%.
+
+**One correction to an earlier claim.** `bioLink` is on the item's
+`connectedTo` (the seed) but is **0% on candidates** — as are `createTime` and
+`commerceUserInfo`. An earlier note listed `bioLink` among the free fields; it
+is not. It costs nothing today either way, because `website` is written as the
+empty string regardless.
+
+**So the free item is not a subset of the scrape — on TikTok it is a superset
+of everything the mapper writes**, plus `ttSeller`, `privateAccount`, `digg`
+and `friends` that nothing reads yet.
+
+### What still needs the first real run
+
+The table above is the *item* side, measured. What it cannot settle is what the
+profile scrape returns for the **same handles** — whether `abe/tiktok-profile-scraper`
+carries something on a live lookup that the following list does not, and
+whether the two disagree on a count. So after the first seed run:
+
+    for the handles that run imported, compare the stored row against the
+    following item it came from, field by field, and list every disagreement
+
+If nothing the funnel reads is lost, take the free path.
+
+### Why this got promoted
+
+It was scoped as a saving. Fixing ledger item 27 showed it is more than that.
+
+With the profile scrape, seed expansion costs **$0.00775 per in-band head
+against keyword search's $0.00591** — it is the DEARER source, not the cheaper
+one, which is the opposite of what an earlier draft of
+`docs/seed-expansion-investigation.md` claimed. Without the scrape it is
+**$0.00275**, less than half keyword's.
+
+So this is not a two-thirds discount on an already-good source. **It is the
+difference between seed expansion being worth using on cost and not.** What it
+otherwise offers — a free bio on 90.7% of candidates where xmolodtsov's
+`channel` object carries nothing bio-shaped at all, plus `ttSeller` and a 36.5%
+in-band rate against ~28% — is real and is the reason to run it either way. But
+the cost argument only exists on the far side of this change.
+
+### The decision rule, written before the evidence
+
+Stated in advance so the result is not read to taste, per
+`docs/verification-rules.md`:
+
+**If the profile scrape returns nothing the funnel reads that the following
+item did not already carry, build it immediately.** Not "consider it", not
+"ledger it again".
+
+"Nothing the funnel reads" means every field in the item-side table above, plus
+any count disagreement large enough to change an `import_status` band decision.
+A field the scrape returns that nothing reads is not a reason to keep paying
+for it.
+
+**If the scrape does return something load-bearing**, name the field, say what
+reads it, and price keeping the scrape only for the candidates that need it.
+
+### Why it was not done up front
+
+It makes seed imports structurally different from every other source's — a
+second import path with its own field mapping and its own failure modes, on a
+source whose first real run had not happened. The estimate charges for the
+scrape and therefore reads high, which is the right direction to be wrong in.
+Measure first: the same rule that killed the compounding loop.
+
+---
+
+## 26. `post_language` coverage bounds the seed queue
+
+**Where:** `app/api/discover/seed-candidates/route.ts`.
+
+The seed queue selects on `post_language`, which is written by enrichment.
+Measured 2026-09-05:
+
+    tiktok, import_status = 'active'      3,712
+    + following_count >= 150              2,362
+    + post_language present                 334   <- the ceiling
+      es 76 · en 235 · pt 2
+
+The queue is bounded by **enrichment coverage**, not by the follower threshold.
+
+**This shrinks on its own.** `post_language` only came into existence on
+2026-09-03, so it is present only on creators enriched since. Every active
+TikTok creator following 150+ picks one up the first time it re-enriches, and
+the queue grows toward the 2,362 — roughly seven times today's pool, with no
+code change. The small number is a statement about how far re-enrichment has
+got, not about the mechanism.
+
+**The lever, if the queue ever feels short**, is falling back to
+`detected_language`. It was deliberately not used: the actor's language call
+beat the heuristic in all four measured disagreements
+(`docs/migrations/2026-09-03-post-place-language-biolink.sql`), and a seed
+chosen on a worse signal spends real money. Widening this is a decision to take
+knowingly, with the accuracy difference in view — not a fallback to add quietly
+because a list looked empty.
+
+**Trigger:** the queue runs dry for a market, or enrichment coverage on active
+TikTok profiles passes ~50% and the constraint stops binding.
+
+---
+
+## 27. `searchResultPrice` exists, is tested, and nothing calls it
+
+**Where:** `lib/discoveryCost.ts` — `searchResultPrice` at the top,
+`estimateDiscoveryCost` further down.
+
+The keyword-search actor swap added `searchResultPrice(platform, source)`,
+which returns `TIKTOK_KEYWORD_RESULT_USD` ($0.00025) for a TikTok keyword run
+and the table price otherwise. `lib/discoverySources.test.ts` covers it in four
+assertions.
+
+**`estimateDiscoveryCost` does not call it.** It still reads
+`price.hashtagResult` unconditionally, so the SetupPanel quotes a TikTok
+**keyword** run at the clockworks rate of $0.0037 per result instead of
+xmolodtsov's $0.00025 — roughly **15x too high**. On a six-term, 200-result
+keyword run that is $4.44 quoted against $0.30 actual for the search phase.
+
+Found while rebasing seed expansion onto this work, not by a test: the tests
+prove the helper is right, and nothing proves it is *used*. A function with
+passing tests and no caller is the shape of exactly this bug.
+
+**The fix is one line** — `searchResultPrice(platform, searchSource)` in place
+of `price.hashtagResult` — and `searchSource` is now already a parameter of
+that function, so nothing else has to change. It was deliberately NOT done
+inside the seed-expansion commit: it changes a number the operator reads before
+spending, on a source seed expansion does not touch, and that deserves its own
+change and its own before/after.
+
+**RESOLVED** in the commit that follows seed expansion. `hashtagUsd` now reads
+`searchResultPrice(platform, searchSource)`; `searchSource` was already a
+parameter after the seed work, so the change is one line. Three assertions were
+added to `lib/discoveryCost.test.ts` — on the ESTIMATE, not on the helper,
+which is the distinction that mattered: every existing test proved the helper
+was right and none proved it was used.
+
+**What the fix cost to find, recorded because it is the interesting part.**
+Wiring it broke a passing test in `lib/seedExpansion.test.ts` that asserted
+`seed.hashtagUsd < keyword.hashtagUsd` — "the following list is the cheaper
+fetch". It is not; it is four times dearer per result. That assertion had been
+green only because the estimate was quoting keyword at the clockworks rate, so
+the bug had propagated into a test AND into a claim in
+`docs/seed-expansion-investigation.md` that seed expansion was the cheapest
+source in the pipeline. Both are corrected. A mispriced constant does not stay
+in the pricing module; it ends up in the documents people make decisions from.

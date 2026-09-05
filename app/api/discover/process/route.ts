@@ -3,6 +3,7 @@ import {
   startHashtagScraper,
   startTikTokHashtagScraper,
   startTikTokKeywordSearch,
+  startTikTokFollowingScraper,
   waitForRun,
   getDatasetItems,
 } from '@/lib/apify';
@@ -26,6 +27,7 @@ import {
   loadKnownHandles,
   writeCandidates,
   touchRun,
+  markSeedExpanded,
   recordAuthorMetaCoverage,
   shouldSkipCachedHandle,
   cacheKey,
@@ -108,7 +110,7 @@ export async function POST(request: NextRequest) {
     const runId = typeof body.runId === 'string' ? body.runId : '';
     // Honoured or rejected, never rewritten — see lib/requestParams.
     const platformP = parseEnumParam('platform', body.platform, ['instagram', 'tiktok'] as const, 'instagram');
-    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword'] as const, 'hashtag');
+    const sourceP = parseEnumParam('searchSource', body.searchSource, ['hashtag', 'keyword', 'seed'] as const, 'hashtag');
     const haltP = parseBoolParam('haltOnLowCoverage', body.haltOnLowCoverage, true);
     /**
      * ISO 3166-1 alpha-2 region for TikTok keyword search. Unset by default.
@@ -127,13 +129,20 @@ export async function POST(request: NextRequest) {
     if (paramError) return NextResponse.json({ error: paramError }, { status: 400 });
 
     const platform = (platformP as { value: 'instagram' | 'tiktok' }).value;
-    const searchSource = (sourceP as { value: 'hashtag' | 'keyword' }).value;
+    const searchSource = (sourceP as { value: 'hashtag' | 'keyword' | 'seed' }).value;
     const haltOnLowCoverage = (haltP as { value: boolean }).value;
     const resultsPerHashtag = (resultsP as { value: number }).value;
 
-    // A keyword may legitimately contain spaces; only a tag gets # stripped.
+    // Three kinds of term, three normalisations. A keyword may legitimately
+    // contain spaces; a tag gets its # stripped; a SEED is a handle and gets
+    // its @ stripped. The seed case shares the tag branch's regex only by
+    // coincidence of both starting with a sigil, so it is written out.
     const rawTerm = String(body.hashtag ?? '').trim().toLowerCase();
-    const hashtag = searchSource === 'keyword' ? rawTerm : rawTerm.replace(/^#/, '');
+    const hashtag = searchSource === 'keyword'
+      ? rawTerm
+      : searchSource === 'seed'
+        ? rawTerm.replace(/^@/, '')
+        : rawTerm.replace(/^#/, '');
     /** Recency window. Off by default — a charged add-on, and a second variable. */
     const dateFilter = typeof body.dateFilter === 'string' && body.dateFilter
       ? body.dateFilter
@@ -142,6 +151,16 @@ export async function POST(request: NextRequest) {
 
     if (!runId) return NextResponse.json({ error: 'runId is required' }, { status: 400 });
     if (!hashtag) return NextResponse.json({ error: 'hashtag is required' }, { status: 400 });
+
+    // Mirrors the guard in /api/discover/start. Repeated rather than trusted,
+    // because this route is callable on its own and the start route's checks
+    // are not a precondition it can see.
+    if (searchSource === 'seed' && platform !== 'tiktok') {
+      return NextResponse.json(
+        { error: 'searchSource="seed" is TikTok only; no Instagram following-list actor is wired up.' },
+        { status: 400 },
+      );
+    }
 
     const empty: Funnel = {
       candidatesFound: 0, entityExcluded: 0, alreadyKnown: 0, cachedReject: 0,
@@ -157,29 +176,60 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // ── 1. Hashtag / keyword scrape ────────────────────────────────────────
+    // ── 1. Search scrape, or a seed's following list ───────────────────────
     //
-    // THREE combinations, not four. Instagram uses one actor for both sources;
+    // FOUR combinations now. Instagram uses one actor for both its sources;
     // TikTok uses clockworks for hashtags and xmolodtsov for keywords, because
     // clockworks under-reads sparse free-text queries — measured on the same
-    // term and day, 29 results for $0.0677 against 54 for $0.0119.
-    const { runId: scrapeRunId } = platform === 'tiktok'
-      ? (searchSource === 'keyword'
-          ? await startTikTokKeywordSearch([hashtag], resultsPerHashtag, { location })
-          : await startTikTokHashtagScraper([hashtag], resultsPerHashtag, {
-              keyword: false,
-              dateFilter,
-            }))
-      : await startHashtagScraper([hashtag], resultsPerHashtag, searchSource === 'keyword');
+    // term and day, 29 results for $0.0677 against 54 for $0.0119. Seed
+    // expansion is a fourth actor again, traversing a following list rather
+    // than searching anything.
+    //
+    // The seed branch is the ONLY seed-specific step in this route. Its items
+    // carry the same `authorMeta` shape clockworks returns — name, fans,
+    // signature, verified, ttSeller — so extraction, the free follower filter,
+    // the entity filter, the known check, the reject cache, the candidate log
+    // and the profile import all run unchanged below.
+    //
+    // Seed is tested FIRST and outside the platform ternary: it is TikTok-only
+    // by construction (guarded above), and nesting it under the platform test
+    // would put the same condition in two places.
+    const { runId: scrapeRunId } = searchSource === 'seed'
+      ? await startTikTokFollowingScraper([hashtag], resultsPerHashtag)
+      : platform === 'tiktok'
+        ? (searchSource === 'keyword'
+            ? await startTikTokKeywordSearch([hashtag], resultsPerHashtag, { location })
+            : await startTikTokHashtagScraper([hashtag], resultsPerHashtag, {
+                keyword: false,
+                dateFilter,
+              }))
+        : await startHashtagScraper([hashtag], resultsPerHashtag, searchSource === 'keyword');
 
     // Bounded by what remains of the budget, so a slow actor cannot consume
     // the whole request and leave nothing for the profile phase.
     const { datasetId } = await waitForRun(scrapeRunId, {
       timeoutMs: Math.max(10_000, deadlineAt - Date.now()),
     });
-    if (!datasetId) throw new Error(`Hashtag scrape for #${hashtag} returned no dataset`);
+    if (!datasetId) {
+      throw new Error(
+        searchSource === 'seed'
+          ? `Following-list scrape for @${hashtag} returned no dataset`
+          : `Hashtag scrape for #${hashtag} returned no dataset`,
+      );
+    }
 
     const posts = await getDatasetItems<unknown>(datasetId, resultsPerHashtag);
+
+    // Marked here: the traversal is paid for and its items are in hand. Not
+    // after the import, which can time out — see markSeedExpanded for why the
+    // mark tracks the fetch rather than the outcome.
+    if (searchSource === 'seed') {
+      await markSeedExpanded(hashtag, platform);
+    }
+
+    // The source is passed, not inferred: the three TikTok actors put the
+    // handle in three different places, and 'seed' reads authorMeta.name like
+    // clockworks does.
     const candidates = extractAuthorHandles(posts, platform, searchSource);
 
     // Author metadata carried on the search item itself. TikTok only; Instagram
@@ -235,12 +285,16 @@ export async function POST(request: NextRequest) {
         cancelled: false,
         timedOut: false,
         extractionFailed: true,
-        extractionError:
-          `${posts.length} posts returned but no author handle could be read from any of them. ` +
-          `Expected ownerUsername on each ${platform} post` +
-          (searchSource === 'keyword'
-            ? '; Instagram\'s keyword dataset differs from its hashtag dataset, so the field may be named differently or absent.'
-            : '.'),
+        extractionError: searchSource === 'seed'
+          ? `${posts.length} following-list entries returned for @${hashtag} but no handle could be ` +
+            `read from any of them. Expected authorMeta.name on each entry — that is the FOLLOWED ` +
+            `account. If the actor has moved the candidate into connectedTo, the two ends of the ` +
+            `edge have been swapped and every candidate would be the seed itself.`
+          : `${posts.length} posts returned but no author handle could be read from any of them. ` +
+            `Expected ownerUsername on each ${platform} post` +
+            (searchSource === 'keyword'
+              ? '; Instagram\'s keyword dataset differs from its hashtag dataset, so the field may be named differently or absent.'
+              : '.'),
         postsFound: posts.length,
         ...empty,
         imported: null,
