@@ -1025,3 +1025,55 @@ whether coverage should lead.
 
 **Trigger:** before any batch of more than a handful of seeds, and certainly
 before running English, where the queue is already past the 200 ceiling.
+
+---
+
+## 31. The actor's pagination order is undocumented, and it is not random
+
+**Where:** `lib/apify.ts` `startTikTokFollowingScraper`, and any seed whose
+`following_count` exceeds the depth requested.
+
+**The actor documents no ordering.** Checked the authoritative sources, not a
+store page: `actorDefinition.readme` is empty (0 chars), no input schema is
+published, and the actor description says only "Input a profile name, and get
+detailed lists of followers and following profiles with complete metadata".
+Nothing about order, recency, or what a truncated request returns.
+
+This did not matter for the original measurements and now does. The four seeds
+of 2026-09-04 followed 16, 102, 207 and 514, so at depth 200 coverage ran
+39-100% and ordering could bias almost nothing. The queue today offers seeds
+following 9,000+, where 200 entries is a **2% sample**.
+
+### The order correlates with account size — free evidence, from data already held
+
+`colgo` follows 207 and returned ~200, so its dataset is a near-complete list
+and the only thing left to read off it is the ORDER. Median follower count by
+quartile of return order:
+
+    q1  n=50   median fans   143,100
+    q2  n=50   median fans   242,600
+    q3  n=50   median fans   404,400
+    q4  n=50   median fans    42,800
+
+Not monotonic, but not flat either: the last quartile is roughly a tenth of the
+third. **Whatever the order is, it is not random**, so truncating at 200 of
+9,937 samples a systematically particular slice — and the in-band rate, which
+is a follower-count band, is exactly the statistic that slice would distort.
+
+Suggestive rather than conclusive: one seed, medians over n=50.
+
+### The test, when a large seed is worth running
+
+One seed following several thousand, run at depth 200 and again at 500:
+
+1. Do the first 200 of the deeper run match the shallow run, in order? That
+   settles whether pagination is stable and prefix-consistent at all.
+2. Do entries 200-500 resemble 0-200 on follower band, bio language and
+   account type? That settles whether a truncated sample is representative.
+
+Roughly $0.70 and it answers both. Until it is run, **treat any seed whose
+coverage is below the measured 39% floor as a sample of unknown bias** — the
+panel already shows coverage per row and ambers it below that floor.
+
+**Trigger:** before reading results from any seed above ~500 following, and
+before a batch that includes them.
