@@ -979,3 +979,49 @@ that column already exists for exactly this. Nothing reads it yet.
 **Trigger:** whoever adds the abandoned-run sweep. The rule is
 `status = 'running' AND last_progress_at < now() - interval '1 hour'`, and it
 should mark rather than delete.
+
+---
+
+## 30. The seed queue orders by a quantity that is capped
+
+**Where:** `app/api/discover/seed-candidates/route.ts` —
+`.order('following_count', { ascending: false })`.
+
+The comment defending it says descending following count "puts the seeds with
+the most to give first". That is wrong, and the error is arithmetic rather than
+stylistic.
+
+**A traversal returns `min(following_count, depth)`.** At depth 200 a seed
+following 9,937 and a seed following 200 both return 200. Every seed at or
+above the depth is *exactly equivalent* in what it delivers, so ordering them
+by following count ranks on a difference that does not exist — while pushing
+the seeds BELOW the depth, the only ones where the number still varies, to the
+bottom.
+
+It bit immediately. The Spanish queue reached 166 eligible; the panel fetched
+100; the cut fell at `following_count` 383, and both seeds chosen for the
+second run — `monicaacelada` (363) and `segundosolar` (314) — were on the wrong
+side of it at ranks 107 and 116. The two seeds picked *because* their coverage
+was good were the two the ordering hid.
+
+Coverage is the figure that matters and it moves the opposite way:
+
+    follows 9,937, depth 200  ->  2% of the list seen
+    follows   383, depth 200  -> 52%
+    follows   314, depth 200  -> 64%
+
+**Interim fix applied:** the panel now requests the route's maximum of 200 and
+displays coverage per row, amber below 39% — the floor of the range the
+original four seeds were measured over. That unblocks a 166-row queue and makes
+the flaw visible, but it does not fix the order, and it fails again above 200
+eligible seeds. English is at 612 today.
+
+**The real fix:** rank by deliverable — `LEAST(following_count, depth)`
+descending, then a quality signal for the resulting ties. PostgREST cannot
+order by a computed expression, so this wants either a view, an RPC, or the
+depth passed in and the ordering done over a bounded candidate set. Whoever
+takes it should also decide whether "most to give" is even the right goal, or
+whether coverage should lead.
+
+**Trigger:** before any batch of more than a handful of seeds, and certainly
+before running English, where the queue is already past the 200 ceiling.

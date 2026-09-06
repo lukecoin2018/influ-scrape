@@ -94,7 +94,10 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
     setSeedLoading(true);
     setSeedError(null);
     try {
-      const res = await fetch(`/api/discover/seed-candidates?language=${language}&limit=100`);
+      // 200 is the route's ceiling. 100 truncated the Spanish queue at 166 and
+      // cut it at exactly following_count 383, hiding every seed BELOW that —
+      // which are the ones with the best coverage. See the ordering note below.
+      const res = await fetch(`/api/discover/seed-candidates?language=${language}&limit=200`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setSeedCandidates(data.seeds || []);
@@ -340,7 +343,9 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
             Selected on post language, an in-band follower count and 150+ following — not on
             place. Expansion surfaces on-market creators cheaply but does not cluster them by
             city or country, so place is a filter on creators you already hold, never the way
-            to find more.
+            to find more. Ordered by following count, which is <em>not</em> the same as
+            ordering by what a seed will return — above the depth every seed delivers the same
+            number, so the coverage figure is the one to read.
           </p>
 
           {seedError && (
@@ -385,6 +390,19 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
                         {' · '}{seed.postLanguage} ·{' '}
                         {(seed.followerCount ?? 0).toLocaleString()} followers · follows{' '}
                         {(seed.followingCount ?? 0).toLocaleString()}
+                        {/* Coverage, not raw following count, is what decides
+                            how much of a seed you actually see. A seed
+                            following 9,937 returns the same 200 as one
+                            following 200 — at 2% of its list against 100%. */}
+                        {seed.followingCount ? (
+                          <span className={
+                            Math.min(seed.followingCount, effectiveResults) / seed.followingCount < 0.39
+                              ? ' text-amber-700 font-medium' : ''
+                          }>
+                            {' · '}
+                            {Math.round(100 * Math.min(seed.followingCount, effectiveResults) / seed.followingCount)}% coverage
+                          </span>
+                        ) : null}
                       </span>
                     </span>
                     {seed.bio && (
