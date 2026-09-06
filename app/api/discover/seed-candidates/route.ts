@@ -12,10 +12,25 @@ import { parseEnumParam, parseBoundedInt, firstError } from '@/lib/requestParams
  * ── THE SELECTION CRITERIA, AND WHY THEY ARE THESE ─────────────────────────
  *
  *   post_language IS NOT NULL   the mechanism is a LANGUAGE one
- *   following_count >= 150      the seed's own ceiling on what it can return
+ *   following_count >= 150      what the seed CLAIMS it can return
  *   import_status = 'active'    in band, i.e. a creator we would want more of
  *   seed_expanded_at IS NULL    traversed once, never on a schedule
+ *   seed_following_retrievable  IS DISTINCT FROM false — see below
  *   platform = 'tiktok'         the only platform with a following-list actor
+ *
+ * ── following_count IS A CLAIM, NOT A GUARANTEE ────────────────────────────
+ *
+ * @ramecabrera reads following_count 383 and privateAccount false, and its
+ * following list cannot be fetched at all: TikTok's per-user connections
+ * privacy setting hides it, and nothing on the profile says so. The traversal
+ * SUCCEEDED with an empty dataset and cost $0.001.
+ *
+ * So the queue cannot tell "follows 383" from "follows 383 that you can see"
+ * in advance, and no column it could read would tell it. What it CAN do is
+ * remember: seed_following_retrievable is written false the first time a
+ * traversal comes back empty against a non-zero following count, and this
+ * query then stops offering that seed. IS DISTINCT FROM false, not = true, so
+ * a seed never tried (NULL) is still offered — the default must be to try.
  *
  * PLACE IS DELIBERATELY NOT A CRITERION HERE, and that is a change from the
  * original design. Selecting seeds on place_city_code or place_country_code
@@ -68,10 +83,14 @@ export async function GET(request: NextRequest) {
       // ONE string literal, not a concatenation: supabase-js infers the row
       // type from the literal, and `'a, b' + 'c'` collapses it to
       // GenericStringError on every field.
-      .select('handle, follower_count, following_count, post_language, post_language_confidence, place_country_code, place_city_code, detected_country, bio', { count: 'exact' })
+      .select('handle, follower_count, following_count, post_language, post_language_confidence, place_country_code, place_city_code, detected_country, bio, seed_last_attempt_at, seed_last_attempt_note', { count: 'exact' })
       .eq('platform', 'tiktok')
       .eq('import_status', 'active')
       .is('seed_expanded_at', null)
+      // IS DISTINCT FROM false, spelled out. NOT .eq(true): NULL means never
+      // attempted and must stay in the queue — the default is to try. Only a
+      // confirmed-empty traversal excludes a seed.
+      .or('seed_following_retrievable.is.null,seed_following_retrievable.is.true')
       .not('post_language', 'is', null)
       .gte('following_count', minFollowing)
       // Ordered, and by a column with no ties beyond duplicates: an unordered
@@ -99,6 +118,11 @@ export async function GET(request: NextRequest) {
       placeCityCode: row.place_city_code as string | null,
       detectedCountry: row.detected_country as string | null,
       bio: typeof row.bio === 'string' ? row.bio.slice(0, 120) : null,
+      // Present when a previous attempt returned SOMETHING but less than
+      // expected. A seed whose attempt returned nothing is excluded above, so
+      // anything showing here is a partial, and worth seeing before re-picking.
+      lastAttemptAt: row.seed_last_attempt_at as string | null,
+      lastAttemptNote: row.seed_last_attempt_note as string | null,
     }));
 
     return NextResponse.json({
@@ -114,6 +138,7 @@ export async function GET(request: NextRequest) {
         postLanguage: language === 'any' ? 'any non-null' : language,
         minFollowing,
         notYetExpanded: true,
+        followingListRetrievable: 'null or true — a seed never tried is still offered',
         place: 'not a criterion — expansion does not concentrate by place',
       },
     });

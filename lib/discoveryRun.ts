@@ -226,33 +226,102 @@ export async function recordAuthorMetaCoverage(
 }
 
 /**
- * Records that a seed's FOLLOWING list has been traversed.
+ * The seed's own following count, needed BEFORE the traversal is judged.
  *
- * Written once the traversal is paid for and its items are in hand, not once
- * the downstream import succeeds. The column answers "has this creator's
- * following list been fetched", and it has, whatever the funnel then made of
- * the candidates. Tying the mark to a successful import would leave a seed
- * unmarked after a run whose profile phase timed out, and the next queue would
- * offer it again — paying a second time for the same list.
+ * This is the number that makes an empty result provable rather than
+ * ambiguous. A search term nobody posted under legitimately returns nothing; a
+ * seed that follows 383 accounts does not. Without this the route has no way to
+ * tell the two apart, which is exactly the gap that let @ramecabrera report as
+ * a healthy run with zero candidates.
  *
- * Scoped to (platform, handle) with an explicit equality on each. There is no
- * subquery here and there is not going to be one: the incident on 2026-08-29
- * came from an unscoped NOT EXISTS.
- *
- * Failure is logged, not thrown. Losing the mark costs one repeat traversal —
- * about $0.20 — while throwing would fail a term whose scrape is already spent.
+ * Null when the profile is not in social_profiles at all — a seed handle typed
+ * by hand rather than chosen from the queue. The caller must then skip the
+ * comparison rather than treat null as zero.
  */
-export async function markSeedExpanded(
+export async function loadSeedFollowingCount(
   handle: string,
   platform: string,
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('social_profiles')
+    .select('following_count')
+    .eq('platform', platform)
+    .eq('handle', norm(handle))
+    .maybeSingle();
+
+  if (error) {
+    console.error(`Failed to read following_count for ${platform}/${handle}:`, error.message);
+    return null;
+  }
+  const raw = data?.following_count;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+}
+
+/** What a seed traversal turned out to be. */
+export interface SeedAttempt {
+  /** Items the following-list actor returned. */
+  returned: number;
+  /** What the seed's own profile says it follows. Null when unknown. */
+  followingCount: number | null;
+  /** Items we asked for — the depth, capped by the seed's own count. */
+  expected: number | null;
+  /** Human-readable evidence, stored so a retry decision needs no re-run. */
+  note: string;
+}
+
+/**
+ * Records the outcome of one seed traversal.
+ *
+ * REPLACES markSeedExpanded, which wrote seed_expanded_at as soon as the
+ * dataset was fetched. Its comment defended that — "the mark tracks the fetch
+ * rather than the outcome" — on the grounds that a timed-out import should not
+ * unmark a traversal already paid for. That reasoning conflated HAVING PAID for
+ * the traversal with HAVING RECEIVED it.
+ *
+ * @ramecabrera cost $0.001, returned nothing, and was marked expanded — burned
+ * out of the queue with nothing to show. The case actually worth protecting is
+ * `returned > 0 && the import did not finish`; `returned === 0` is not that
+ * case and never was.
+ *
+ * So the three outcomes are written to two different columns:
+ *
+ *   returned > 0    seed_expanded_at + retrievable true   never offer again
+ *   returned === 0  retrievable FALSE, seed_expanded_at UNTOUCHED
+ *                                                          do not offer, but
+ *                                                          clearing one column
+ *                                                          brings it back
+ *   never tried     both NULL                              offer
+ *
+ * Scoped to (platform, handle) with an explicit equality on each. No subquery —
+ * see docs/incident-2026-08-29-unscoped-delete.md.
+ *
+ * Failure is logged, not thrown: losing the record costs one repeat traversal,
+ * while throwing would fail a term whose scrape is already spent.
+ */
+export async function recordSeedAttempt(
+  handle: string,
+  platform: string,
+  attempt: SeedAttempt,
 ): Promise<void> {
+  const now = new Date().toISOString();
+  const succeeded = attempt.returned > 0;
+
+  // seed_expanded_at is only ever SET here, never cleared. A traversal that
+  // returned nothing must not erase the record of an earlier one that did.
+  const patch: Record<string, unknown> = {
+    seed_last_attempt_at: now,
+    seed_last_attempt_note: attempt.note,
+    seed_following_retrievable: succeeded,
+    ...(succeeded ? { seed_expanded_at: now } : {}),
+  };
+
   const { error } = await supabase
     .from('social_profiles')
-    .update({ seed_expanded_at: new Date().toISOString() })
+    .update(patch)
     .eq('platform', platform)
     .eq('handle', norm(handle));
 
   if (error) {
-    console.error(`Failed to mark seed ${platform}/${handle} expanded:`, error.message);
+    console.error(`Failed to record seed attempt for ${platform}/${handle}:`, error.message);
   }
 }

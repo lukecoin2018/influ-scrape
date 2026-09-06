@@ -22,12 +22,14 @@ import { importScrapedProfiles } from '@/lib/profileImport';
 import { discoveryImportPolicy } from '@/lib/discoveryPolicy';
 import { normaliseRange, importStatusFor } from '@/lib/followerRange';
 import { parseEnumParam, parseBoundedInt, parseBoolParam, firstError } from '@/lib/requestParams';
+import { judgeSeedTraversal } from '@/lib/seedTraversal';
 import {
   loadCachedMeasurements,
   loadKnownHandles,
   writeCandidates,
   touchRun,
-  markSeedExpanded,
+  recordSeedAttempt,
+  loadSeedFollowingCount,
   recordAuthorMetaCoverage,
   shouldSkipCachedHandle,
   cacheKey,
@@ -167,6 +169,15 @@ export async function POST(request: NextRequest) {
       preScrapeOutOfBand: 0, toScrape: 0,
     };
 
+    /**
+     * How the traversal compared against the seed's own following count.
+     *
+     * Carried to the response so a partial return is visible in the funnel
+     * rather than only in the note stored on the profile. Null for every
+     * non-seed source.
+     */
+    let seedTraversal: ReturnType<typeof judgeSeedTraversal> | null = null;
+
     // ── Cancellation check A: nothing spent yet ────────────────────────────
     if (request.signal?.aborted) {
       return NextResponse.json({
@@ -220,11 +231,48 @@ export async function POST(request: NextRequest) {
 
     const posts = await getDatasetItems<unknown>(datasetId, resultsPerHashtag);
 
-    // Marked here: the traversal is paid for and its items are in hand. Not
-    // after the import, which can time out — see markSeedExpanded for why the
-    // mark tracks the fetch rather than the outcome.
+    // ── The seed traversal is judged against the seed's OWN following count ──
+    //
+    // Not against zero, and not by the extraction guard below, which cannot
+    // fire on an empty dataset. See lib/seedTraversal.ts for the @ramecabrera
+    // run that made this necessary: 0 items against a following_count of 383,
+    // reported as a healthy run, seed marked expanded and burned.
+    //
+    // The outcome is recorded whatever it is — that is the point of splitting
+    // seed_expanded_at from seed_following_retrievable — but only a traversal
+    // that RETURNED something sets seed_expanded_at.
     if (searchSource === 'seed') {
-      await markSeedExpanded(hashtag, platform);
+      const followingCount = await loadSeedFollowingCount(hashtag, platform);
+      const judgement = judgeSeedTraversal(posts.length, followingCount, resultsPerHashtag);
+
+      await recordSeedAttempt(hashtag, platform, {
+        returned: judgement.returned,
+        followingCount: judgement.followingCount,
+        expected: judgement.expected,
+        note: judgement.note,
+      });
+
+      if (judgement.extractionFailed) {
+        await touchRun(runId);
+        return NextResponse.json({
+          hashtag, platform, searchSource,
+          cancelled: false, timedOut: false,
+          extractionFailed: true,
+          extractionError:
+            `Following-list traversal for @${hashtag} returned nothing. ${judgement.note} ` +
+            `The seed has NOT been marked expanded; seed_following_retrievable is now false, ` +
+            `and setting it back to NULL is how a retry is requested.`,
+          seedTraversal: judgement,
+          postsFound: 0,
+          ...empty,
+          imported: null,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+
+      // A shortfall is not a failure — a list can shrink between enrichment and
+      // traversal — but it is never allowed to pass as a thin result.
+      seedTraversal = judgement;
     }
 
     // The source is passed, not inferred: the three TikTok actors put the
@@ -528,6 +576,7 @@ export async function POST(request: NextRequest) {
       searchSource,
       extractionFailed: false,
       halted: false,
+      seedTraversal,
       authorMetaCoverage: coverage,
       importedSamples,
       cancelled: imported.cancelled,

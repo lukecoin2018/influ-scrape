@@ -940,3 +940,42 @@ the bug had propagated into a test AND into a claim in
 `docs/seed-expansion-investigation.md` that seed expansion was the cheapest
 source in the pipeline. Both are corrected. A mispriced constant does not stay
 in the pricing module; it ends up in the documents people make decisions from.
+
+---
+
+## 28. `discovery_runs.status` has no value for "ran and failed"
+
+**Where:** `app/api/discover/finish/route.ts:32` —
+`body.status === 'cancelled' ? 'cancelled' : 'complete'`.
+
+Two values, and a run can end three ways: it finished, a person stopped it, or
+it ran and failed. Run `34e0d70b` is the third — its one seed term returned an
+empty traversal, the term reported an extraction failure, and there is no
+status that says so. It was closed as `cancelled`, which is the least wrong of
+the two available and still implies a person pressed Stop.
+
+Not urgent: `discovery_candidates` carries the per-term outcome, so the
+information exists at the row level. But a query for "which runs failed" cannot
+be written against `discovery_runs` alone.
+
+**Trigger:** next time the finish route is touched. Add `'failed'` to the
+taxonomy with a CHECK, and have the client send it when every term in a run
+reported `extractionFailed`.
+
+---
+
+## 29. One pre-existing run is stuck at `status = 'running'`
+
+**Where:** `discovery_runs` id `1ef7db67-9f02-4eac-bb15-bfc73d382bc4`,
+search_source `hashtag`, started 2026-09-03.
+
+Found while closing run `34e0d70b`. It predates the seed work and was left
+alone deliberately — closing someone else's abandoned run is a judgement about
+what happened to it that nothing here has the evidence to make.
+
+`last_progress_at` is what distinguishes an abandoned run from a live one, and
+that column already exists for exactly this. Nothing reads it yet.
+
+**Trigger:** whoever adds the abandoned-run sweep. The rule is
+`status = 'running' AND last_progress_at < now() - interval '1 hour'`, and it
+should mark rather than delete.

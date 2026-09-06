@@ -49,6 +49,13 @@ interface SeedCandidate {
   placeCountryCode: string | null;
   detectedCountry: string | null;
   bio: string | null;
+  /**
+   * Set only when an earlier traversal returned LESS than expected. A seed
+   * whose traversal returned nothing is filtered out server-side, so anything
+   * surfacing here is a partial worth seeing before picking it again.
+   */
+  lastAttemptAt: string | null;
+  lastAttemptNote: string | null;
 }
 
 const SEED_LANGUAGES = [
@@ -370,15 +377,23 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-slate-800">
-                      @{seed.handle}
+                      <span>@{seed.handle}</span>
+                      {/* The separator is inside this span, not left to the
+                          ml-2 class: the two spans render as adjacent inline
+                          text and "@ramecabrera" + "es" read as one handle. */}
                       <span className="ml-2 text-xs font-normal text-slate-500">
-                        {seed.postLanguage} ·{' '}
+                        {' · '}{seed.postLanguage} ·{' '}
                         {(seed.followerCount ?? 0).toLocaleString()} followers · follows{' '}
                         {(seed.followingCount ?? 0).toLocaleString()}
                       </span>
                     </span>
                     {seed.bio && (
                       <span className="block text-xs text-slate-500 truncate">{seed.bio}</span>
+                    )}
+                    {seed.lastAttemptNote && (
+                      <span className="block text-xs text-amber-700 mt-0.5">
+                        Previous attempt: {seed.lastAttemptNote}
+                      </span>
                     )}
                   </span>
                 </label>
