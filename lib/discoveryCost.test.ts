@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   estimateDiscoveryCost,
+  estimateBrandFeedCost,
   AUTHORS_PER_POST,
   ACTOR_PRICES_USD,
   BRAND_PROFILES_PER_POST,
@@ -232,4 +233,32 @@ test('Instagram prices both its sources identically — one actor, two flags', (
   const hashtag = estimateDiscoveryCost(6, 200, 'niche', 'instagram', 'hashtag');
 
   assert.deepEqual(keyword, hashtag);
+});
+
+// ── Brand feed ────────────────────────────────────────────────────────────────
+//
+// Asserted on the ESTIMATE, not only on the table: item 27 in the ledger was a
+// price that was right in the table and never used by the number on screen.
+
+test('brand feed on Instagram: the default 25 x 12 quotes $0.81, the literal the page carried', () => {
+  const e = estimateBrandFeedCost('instagram', 25, 12);
+  assert.equal(e.posts, 300);
+  assert.equal(round(e.postsUsd), 0.81);
+  assert.equal(e.postsUsd, 300 * ACTOR_PRICES_USD.instagram.postResult);
+});
+
+test('brand feed on TikTok: 25 x 12 quotes $0.225 — 3.6x cheaper per post than Instagram', () => {
+  const e = estimateBrandFeedCost('tiktok', 25, 12);
+  assert.equal(e.posts, 300);
+  assert.equal(e.postsUsd, 300 * ACTOR_PRICES_USD.tiktok.postResult);
+  assert.equal(Math.round(e.postsUsd * 1000) / 1000, 0.225);
+  assert.ok(
+    ACTOR_PRICES_USD.tiktok.postResult < ACTOR_PRICES_USD.instagram.postResult / 3,
+    'xmolodtsov at $0.00075 against the Instagram post scraper at $0.0027',
+  );
+});
+
+test('brand feed: the estimate moves with the platform, and never goes negative', () => {
+  assert.notEqual(estimateBrandFeedCost('tiktok', 3, 12).postsUsd, estimateBrandFeedCost('instagram', 3, 12).postsUsd);
+  assert.deepEqual(estimateBrandFeedCost('tiktok', -1, 12), { posts: 0, postsUsd: 0 });
 });

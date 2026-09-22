@@ -32,17 +32,44 @@ import type { DiscoveryMode, SearchSource } from './types';
  *
  *   instagram hashtag  apify/instagram-hashtag-scraper   $0.0026 / result
  *   instagram profile  apify/instagram-profile-scraper   $0.0026 / profile
+ *   instagram post     apify/instagram-post-scraper      $0.0027 / post
  *   tiktok    hashtag  clockworks/tiktok-scraper         $0.0037 / result
  *   tiktok    profile  abe/tiktok-profile-scraper        $0.0050 / profile
+ *   tiktok    post     xmolodtsov/tiktok-profile-scraper $0.00075 / post
+ *
+ * postResult is what the brand-feed page prices a "posts per brand" scrape
+ * at. The Instagram figure is the literal the page carried inline before it
+ * moved here (the sum of the actor's "post" and "post-details" events, so it
+ * reads at the detailedData price even on a basicData run — high, as above).
+ * The TikTok figure is the store's FREE-tier per-item price on 2026-09-22 and
+ * matches the per-item cost the Enrich route measured from a real run.
  *
  * Higher subscription tiers are cheaper, so these read high for anyone on a
  * paid plan. That is deliberate: an estimate that reads low is worse than one
  * that reads high.
  */
 export const ACTOR_PRICES_USD = {
-  instagram: { hashtagResult: 0.0026, profileResult: 0.0026 },
-  tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050 },
+  instagram: { hashtagResult: 0.0026, profileResult: 0.0026, postResult: 0.0027 },
+  tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050, postResult: 0.00075 },
 } as const;
+
+/**
+ * The post-scrape half of a brand-feed run: brands x posts per brand at the
+ * platform's per-post price. The profile scrape that follows is not estimated,
+ * because how many new handles a feed yields is exactly what the run measures.
+ *
+ * A function rather than an inline expression on the page so a test can assert
+ * the page's number is the table's number (see deferred-cleanups item 27 for
+ * why "the helper is right" and "the helper is used" are different claims).
+ */
+export function estimateBrandFeedCost(
+  platform: keyof typeof ACTOR_PRICES_USD,
+  brands: number,
+  postsPerBrand: number
+): { posts: number; postsUsd: number } {
+  const posts = Math.max(0, brands) * Math.max(0, postsPerBrand);
+  return { posts, postsUsd: posts * ACTOR_PRICES_USD[platform].postResult };
+}
 
 /**
  * TikTok KEYWORD search is a different actor and an order of magnitude cheaper.

@@ -525,6 +525,61 @@ export async function startTikTokProfileScraper(
 }
 
 /**
+ * Brand feed on TikTok: the last N posts of ONE profile.
+ *
+ * xmolodtsov~tiktok-profile-scraper — the same actor the Enrich route runs
+ * inline for creator posts, chosen over clockworks on price: $0.00075 per post
+ * against $0.003 (clockworks~tiktok-profile-scraper) and $0.0037 + $0.001 per
+ * run (clockworks~tiktok-scraper), all FREE-tier store prices on 2026-09-22.
+ * Twelve posts of one brand is $0.009.
+ *
+ * Output shape: verified in commit c3b6f16 (2026-09-04), which diffed 13 posts
+ * of one creator across clockworks and this actor and found detailedMentions,
+ * mentions, isSponsored, isAd, authorMeta, the engagement counts and
+ * createTimeISO present and equal on both. detailedMentions is the field the
+ * brand-feed detector reads — it is the only one that carries usernames rather
+ * than display names (docs/tiktok-truncation-repair.md).
+ *
+ * Input is the bare handle, the only form verified against this actor
+ * (app/api/enrich/process/route.ts). excludePinnedPosts because a brand's
+ * pinned posts are its oldest and would come back on every re-scrape; the
+ * Enrich route does not send it, and that difference is deliberate — this is
+ * a feed read, not an archive read.
+ *
+ * A handle the actor cannot resolve still returns (and bills) one item; the
+ * caller treats an empty or error-only dataset as "0 posts", which the
+ * tiktok_feed_post_count column exists to record.
+ */
+export async function startTikTokPostScraper(
+  handle: string,
+  resultsPerPage: number = 12
+): Promise<{ runId: string; datasetId?: string }> {
+  const actorId = 'xmolodtsov~tiktok-profile-scraper';
+  const input = {
+    profiles: [handle.replace(/^@/, '').toLowerCase()],
+    resultsPerPage,
+    excludePinnedPosts: true,
+  };
+
+  const response = await fetch(
+    `${APIFY_API_BASE}/acts/${actorId}/runs?token=${APIFY_TOKEN}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start TikTok post scraper: ${response.status} ${errorText}`);
+  }
+
+  const data: ApifyRunResponse = await response.json();
+  return { runId: data.data.id, datasetId: data.data.defaultDatasetId };
+}
+
+/**
  * Seed expansion: one creator's FOLLOWING list.
  *
  * clockworks~tiktok-followers-scraper, the same actor that returns followers —

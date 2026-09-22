@@ -53,6 +53,16 @@ redundant. Left alone to keep C3b contained.
 **Trigger:** brand-feed ever scraping more than one profile batch — i.e. if
 `MAX_NEW_CREATORS_PER_BRAND` rises above whatever batch size it adopts.
 
+**Revisited 2026-09-22, with the TikTok brand feed.** The route now calls
+`importScrapedProfiles` for either platform through one code path, still as a
+single batch of at most `MAX_NEW_CREATORS_PER_BRAND` (60) handles, and still
+checks `request.signal.aborted` immediately before it. Nothing about the
+trigger changed, so `signal` is still not passed. Recorded because a second
+platform is the kind of change that makes someone assume it must have been,
+and it was not: the TikTok profile scrape is one `abe~tiktok-profile-scraper`
+run per brand, same as Instagram's one `apify~instagram-profile-scraper` run.
+If it is ever passed, pass it for both platforms in the same change.
+
 ---
 
 ## 4. `chunk()` duplicated a third time
@@ -965,3 +975,34 @@ rewires manual add would make that diff about two things. It is a pure
 deletion with no behaviour to verify beyond `tsc` and the build.
 
 **Trigger:** the next change that touches `app/page.tsx` for any other reason.
+
+---
+
+## 29. The Enrich route still starts the TikTok post actor inline
+
+**Where:** `app/api/enrich/process/route.ts` — the TikTok branch builds
+`{ profiles: [handle], resultsPerPage }` for `xmolodtsov~tiktok-profile-scraper`
+with its own `fetch`, its own unbounded `pollRun` (`while (true)`, no
+TIMED-OUT branch, no deadline) and its own `fetchDataset`. `lib/apify.ts` now
+has `startTikTokPostScraper`, added for the TikTok brand feed, which starts
+the same actor and is waited on with the bounded `waitForRun` (240 s,
+`ApifyRunTimeout` carrying the dataset id).
+
+**Why deferred:** the brand-feed change should be about the brand feed. Moving
+the Enrich route onto the helper changes three things at once in a route that
+is not otherwise touched — the input gains `excludePinnedPosts: true`, which
+the Enrich route deliberately does not send (a creator's pinned posts are
+part of their recent work; a brand's are its oldest), the poller gains a
+deadline, and the dataset read gains a limit — and each of those moves a
+number on a page someone reads. It deserves its own change with the
+`excludePinnedPosts` difference made a parameter first.
+
+**What it would fix beyond duplication:** the unbounded poll. An actor run
+that hangs keeps an Enrich request alive until the platform kills it, with no
+diagnostic, which is exactly what `waitForRun` was written to prevent
+(`lib/apify.ts`, "Unlike the inline poller in app/api/enrich/process").
+
+**Trigger:** the next change to the Enrich route's TikTok branch for any other
+reason, or the first enrich run that hangs on the actor. Related: item 7, which
+wants the pure mappers out of `lib/apify.ts` — when that split happens the
+helper and the mappers should land on opposite sides of it.
