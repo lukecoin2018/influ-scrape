@@ -1,7 +1,20 @@
-# TikTok truncation repair — verified plan (parked)
+# TikTok truncation repair — verified plan (executed)
 
-**Status:** verified, not executed. Parked to resume as a separate project.
-**Cost to complete:** $4.68. **Already spent verifying:** $0.16.
+**Status:** EXECUTED in commit `9ecc93e` on 2026-08-28: 1,559 posts targeted,
+1,443 rows updated, 62 already correct, 3,498 fragment handles removed, 3,413
+real handles added, 0 actor errors, 54 skipped on URL canonicalisation. Cost
+$4.68, as verified below. This header was still reading "parked" on
+2026-09-22; the plan below is kept as the record of how the repair was
+verified and what it did.
+
+**Not yet done from the sequencing section:** step 2, the `brand_aliases`
+cleanup, and the re-run of `scripts/backfill-brand-platforms.mjs`. The
+backfill ran on 2026-08-26, two days BEFORE the repair, so 1,272 of the 4,808
+`brands` rows flagged `tiktok` have no TikTok mention left in `creator_posts`
+(measured 2026-09-22) — they were flagged from fragments the repair removed.
+A dry run of the backfill shows the difference.
+
+**Original plan cost:** $4.68. **Spent verifying:** $0.16.
 
 ## The defect
 
