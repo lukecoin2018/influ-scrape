@@ -159,19 +159,59 @@ export interface ParsedHandles {
 }
 
 /**
+ * A pasted profile URL. Scheme, `www.` and `m.` are optional; the first path
+ * segment is the account. Stops at `/`, `?` or `#`, so a trailing slash, a
+ * query string (`?lang=en`, `?hl=en`, `?igsh=...`) or a deeper path
+ * (`/@handle/video/123`) all resolve to the same handle.
+ */
+const PROFILE_URL_PATTERN = /^(?:https?:\/\/)?(?:www\.|m\.)?(?:instagram\.com|tiktok\.com)\/([^/?#]+)/i;
+
+/**
+ * First path segments that are pages, not accounts. A post or reel link is
+ * not a handle, and several of these ("reel", "explore") would otherwise pass
+ * validation as plausible usernames.
+ */
+const NON_HANDLE_PATH_SEGMENTS = new Set([
+  'p', 'reel', 'reels', 'explore', 'stories', 'accounts', 'tv', 'direct',
+  'video', 'tag', 'discover', 'search', 'music', 't', 'foryou', 'live', 'embed',
+]);
+
+/**
+ * Reduces one token to the text validation should see.
+ *
+ * A bare handle passes through. A profile URL yields its account segment. A
+ * URL to something other than a profile yields null so the caller can report
+ * it as such rather than as a string full of illegal characters.
+ */
+function handleCandidate(token: string): string | null {
+  const url = PROFILE_URL_PATTERN.exec(token);
+  if (!url) return token.toLowerCase().replace(/^@+/, '');
+
+  const segment = url[1].toLowerCase().replace(/^@+/, '');
+  return NON_HANDLE_PATH_SEGMENTS.has(segment) ? null : segment;
+}
+
+/**
  * Splits a free-text handle list into normalised handles.
  *
  * Accepts any mix of newlines, spaces, tabs, commas and semicolons, so a
  * pasted column, a comma list and a space-separated line all work. Strips a
  * leading @, lowercases, and de-duplicates while preserving input order.
  *
+ * Profile URLs are accepted on both platforms — `instagram.com/handle`,
+ * `tiktok.com/@handle`, with or without scheme, `www.`, a trailing slash or a
+ * query string — because that is what a browser address bar gives you. The
+ * manual-add page is the reason: "creators you find while browsing" arrive as
+ * URLs at least as often as as handles.
+ *
  * Invalid tokens are returned rather than dropped: one bad entry should
- * report itself, not fail the batch or vanish silently.
+ * report itself, not fail the batch or vanish silently. A URL is reported
+ * under the text that was pasted, so the offending line is recognisable.
  */
 export function parseHandleList(input: string): ParsedHandles {
   const tokens = (input || '')
     .split(/[\s,;]+/)
-    .map(token => token.trim().toLowerCase().replace(/^@+/, ''))
+    .map(token => token.trim())
     .filter(Boolean);
 
   const valid: string[] = [];
@@ -179,12 +219,18 @@ export function parseHandleList(input: string): ParsedHandles {
   const seen = new Set<string>();
 
   for (const token of tokens) {
-    if (seen.has(token)) continue;
-    seen.add(token);
+    const candidate = handleCandidate(token);
+    if (candidate === null) {
+      invalid.push({ input: token, reason: 'not a profile URL' });
+      continue;
+    }
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
 
-    const reason = handleRejectionReason(token);
+    const reason = handleRejectionReason(candidate);
     if (reason) invalid.push({ input: token, reason });
-    else valid.push(token);
+    else valid.push(candidate);
   }
 
   return { valid, invalid };

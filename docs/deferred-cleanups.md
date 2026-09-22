@@ -940,3 +940,28 @@ the bug had propagated into a test AND into a claim in
 `docs/seed-expansion-investigation.md` that seed expansion was the cheapest
 source in the pipeline. Both are corrected. A mispriced constant does not stay
 in the pricing module; it ends up in the documents people make decisions from.
+
+---
+
+## 28. Remove the legacy TikTok profile route with `startLegacyDiscovery`
+
+**Where:** `app/api/tiktok/start-profile-scrape/route.ts`,
+`app/api/tiktok/start-hashtag-scrape/route.ts`, `startLegacyDiscovery` in
+`app/page.tsx` (line ~319), and the client-side profile-scrape loop beneath it.
+
+The manual-add page was the last live caller of `/api/tiktok/start-profile-scrape`.
+It now goes through `/api/add/lookup`, which uses `startTikTokProfileScraper`
+in `lib/apify.ts` — the same actor, the same input, one place.
+
+The two `app/api/tiktok/*` routes are still referenced from `startLegacyDiscovery`,
+the pre-`/api/discover/process` client pipeline that nothing invokes: the only
+`onStartDiscovery` binding is `startDiscovery`. All three are dead together and
+should go together, along with `app/add/old-page.tsx`,
+`app/api/tiktok/start-profile-scrape/old-route.ts` and the other `old-*` files
+Next does not route.
+
+**Why deferred:** deleting ~300 lines of `app/page.tsx` in the same change that
+rewires manual add would make that diff about two things. It is a pure
+deletion with no behaviour to verify beyond `tsc` and the build.
+
+**Trigger:** the next change that touches `app/page.tsx` for any other reason.

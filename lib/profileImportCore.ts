@@ -89,6 +89,17 @@ export interface MeasuredHandle {
    * that is the worst possible place for a silent discrepancy.
    */
   saved: boolean;
+  /**
+   * The (platform, handle) was already in the database before this run.
+   *
+   * Only meaningful when `saved` is true: it says the write refreshed an
+   * existing profile rather than creating a creator. Reconciled from
+   * saveCreators' existingHandles the same way `saved` is from savedHandles,
+   * so it is never recorded on intent either. Discovery never sees a true
+   * value here — it filters known handles out before scraping — but manual
+   * add deliberately does not, and reports it per handle.
+   */
+  existing: boolean;
 }
 
 export interface ImportOutcome {
@@ -217,6 +228,14 @@ export const EMPTY_IMPORT_OUTCOME: ImportOutcome = {
   measured: [], scrapedHandles: [], errors: [], cancelled: false, timedOut: false,
 };
 
+/** True for a dataset item that reports a failure instead of carrying a profile. */
+export function isActorErrorItem(item: unknown): boolean {
+  return !!item
+    && typeof item === 'object'
+    && typeof (item as Record<string, unknown>).error === 'string'
+    && (item as Record<string, unknown>).error !== '';
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   if (!Number.isFinite(size) || size <= 0 || size >= items.length) return [items];
   const out: T[][] = [];
@@ -303,6 +322,17 @@ export async function runProfileImport(
     const creators: ImportableCreator[] = [];
 
     for (const profile of rawProfiles) {
+      // An explicit failure item, not a profile. apify/instagram-profile-scraper
+      // returns `{ username, url, error: 'not_found', errorDescription }` for a
+      // handle that does not resolve, and xmolodtsov's TikTok actors return
+      // `{ input, error }`. Mapping one of these yields a handle with a zero
+      // follower count, which was being imported as an unknown_size creator —
+      // observed on the first manual-add test run, from a typo. Skipped here,
+      // so the handle stays in scrapedHandles but not in measured, which is
+      // exactly the "batch returned, actor produced no profile" state the
+      // caller already reports as not found.
+      if (isActorErrorItem(profile)) continue;
+
       const mapped: MappedProfile = platform === 'tiktok'
         ? mapTikTokProfile(profile)
         : mapProfileToCreator(profile as InstagramProfile);
@@ -341,7 +371,7 @@ export async function runProfileImport(
         cacheOnly.push({ handle, platform, followerCount: mapped.followerCount });
         measured.push({
           handle, platform, followerCount: mapped.followerCount,
-          status: importStatus, decision, saved: false,
+          status: importStatus, decision, saved: false, existing: false,
         });
         continue;
       }
@@ -350,7 +380,7 @@ export async function runProfileImport(
       // recording an intention.
       pending.push({
         handle, platform, followerCount: mapped.followerCount,
-        status: importStatus, decision, saved: false,
+        status: importStatus, decision, saved: false, existing: false,
       });
 
       creators.push({
@@ -384,8 +414,13 @@ export async function runProfileImport(
     // list saveDiscoveredCreators confirmed; anything absent from it failed and
     // must not be reported as imported.
     const confirmed = new Set(result.savedHandles.map(h => norm(h)));
+    const existed = new Set((result.existingHandles ?? []).map(h => norm(h)));
     for (const entry of pending) {
-      measured.push({ ...entry, saved: confirmed.has(entry.handle) });
+      measured.push({
+        ...entry,
+        saved: confirmed.has(entry.handle),
+        existing: existed.has(entry.handle),
+      });
     }
     pending.length = 0;
 

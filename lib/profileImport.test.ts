@@ -38,7 +38,7 @@ function saveSpy() {
     calls.push({ creators: [...creators], platform });
     return {
       saved: creators.length, failed: 0, total: creators.length,
-      savedHandles: creators.map(c => c.handle), errors: [],
+      savedHandles: creators.map(c => c.handle), existingHandles: [], errors: [],
     };
   };
   return { calls, fn };
@@ -684,4 +684,35 @@ test('II2: a handle the save silently omits is treated as failed, not imported',
   });
 
   assert.equal(out.measured.find(m => m.handle === 'h0')?.saved, false);
+});
+
+// ── Actor error items ─────────────────────────────────────────────────────────
+
+test('an explicit not_found item is skipped, not imported as an unknown_size creator', async () => {
+  const save = saveSpy();
+  // Shape copied from a real apify/instagram-profile-scraper item for a handle
+  // that does not exist, observed 2026-09-22 on the first manual-add run.
+  const scrapeBatch = async () => [
+    { username: 'gone', url: 'https://www.instagram.com/gone', error: 'not_found', errorDescription: 'Post does not exist' },
+    igProfile('here', 100_000),
+  ];
+
+  const out = await runProfileImport(['gone', 'here'], { ...base(scrapeSpy(), save), scrapeBatch });
+
+  assert.deepEqual(save.calls[0].creators.map(c => c.handle), ['here'], 'only the real profile is saved');
+  assert.deepEqual(out.measured.map(m => m.handle), ['here'], 'the error item is not a measurement');
+  assert.equal(out.unknownSize, 0, 'and is not counted as unmeasured');
+  assert.ok(out.scrapedHandles.includes('gone'), 'but its batch did complete, so the caller can report it as not found');
+});
+
+test('an xmolodtsov-style error item ({ input, error }) is skipped the same way', async () => {
+  const save = saveSpy();
+  const scrapeBatch = async () => [
+    { input: 'deleted_user', error: 'not_found', errorDescription: 'Profile @deleted_user not found' },
+  ];
+  const out = await runProfileImport(['deleted_user'], {
+    ...base(scrapeSpy(), save), platform: 'tiktok', scrapeBatch,
+  });
+  assert.deepEqual(save.calls[0].creators, []);
+  assert.deepEqual(out.measured, []);
 });
