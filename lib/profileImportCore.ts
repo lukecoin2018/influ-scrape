@@ -228,6 +228,14 @@ export const EMPTY_IMPORT_OUTCOME: ImportOutcome = {
   measured: [], scrapedHandles: [], errors: [], cancelled: false, timedOut: false,
 };
 
+/** True for a dataset item that reports a failure instead of carrying a profile. */
+export function isActorErrorItem(item: unknown): boolean {
+  return !!item
+    && typeof item === 'object'
+    && typeof (item as Record<string, unknown>).error === 'string'
+    && (item as Record<string, unknown>).error !== '';
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   if (!Number.isFinite(size) || size <= 0 || size >= items.length) return [items];
   const out: T[][] = [];
@@ -314,6 +322,17 @@ export async function runProfileImport(
     const creators: ImportableCreator[] = [];
 
     for (const profile of rawProfiles) {
+      // An explicit failure item, not a profile. apify/instagram-profile-scraper
+      // returns `{ username, url, error: 'not_found', errorDescription }` for a
+      // handle that does not resolve, and xmolodtsov's TikTok actors return
+      // `{ input, error }`. Mapping one of these yields a handle with a zero
+      // follower count, which was being imported as an unknown_size creator —
+      // observed on the first manual-add test run, from a typo. Skipped here,
+      // so the handle stays in scrapedHandles but not in measured, which is
+      // exactly the "batch returned, actor produced no profile" state the
+      // caller already reports as not found.
+      if (isActorErrorItem(profile)) continue;
+
       const mapped: MappedProfile = platform === 'tiktok'
         ? mapTikTokProfile(profile)
         : mapProfileToCreator(profile as InstagramProfile);
