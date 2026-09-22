@@ -1002,6 +1002,19 @@ that hangs keeps an Enrich request alive until the platform kills it, with no
 diagnostic, which is exactly what `waitForRun` was written to prevent
 (`lib/apify.ts`, "Unlike the inline poller in app/api/enrich/process").
 
+**Now urgent for a different reason, found 2026-09-22.** xmolodtsov's developer
+caps the Apify FREE plan inside the actor: the run log reads "Free plan: run
+2/5 this month, capped at the first 10 profiles with 1 post each (a limit set
+by the developer, not by Apify)", and the sixth run in a month returns zero
+items. The cap arrived with build 0.1.10 after the 09-04 swap; Enrich passes
+on 09-05 and 09-06 still stored 15 posts a profile. **The next Enrich TikTok
+pass on this account will store one post per profile for at most 10 profiles,
+and nothing at all after five runs.** Nothing in pricingInfos, the input
+schema or the store README says so; only the run log does. The brand feed
+went to clockworks~tiktok-profile-scraper ($0.003, uncapped, verified by run
+H2vg1ZgDrjZxKqI2A). Enrich needs the same swap or a paid Apify plan before its
+next TikTok run, whichever is decided first.
+
 **Trigger:** the next change to the Enrich route's TikTok branch for any other
 reason, or the first enrich run that hangs on the actor. Related: item 7, which
 wants the pure mappers out of `lib/apify.ts` — when that split happens the

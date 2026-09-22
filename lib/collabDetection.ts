@@ -77,9 +77,10 @@ export interface BrandFeedPost {
 }
 
 /**
- * The subset of xmolodtsov/tiktok-profile-scraper output this module reads.
+ * The subset of clockworks/tiktok-profile-scraper output this module reads.
  * Field names verified against a real dataset in commit c3b6f16, where the
- * same 13 posts were diffed across clockworks and xmolodtsov and agreed.
+ * same 13 posts were diffed across clockworks and xmolodtsov and agreed, and
+ * again on 2026-09-22 against a 12-post clockworks run of @rhode.
  */
 export interface TikTokBrandFeedPost {
   id?: string;

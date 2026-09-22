@@ -35,14 +35,18 @@ import type { DiscoveryMode, SearchSource } from './types';
  *   instagram post     apify/instagram-post-scraper      $0.0027 / post
  *   tiktok    hashtag  clockworks/tiktok-scraper         $0.0037 / result
  *   tiktok    profile  abe/tiktok-profile-scraper        $0.0050 / profile
- *   tiktok    post     xmolodtsov/tiktok-profile-scraper $0.00075 / post
+ *   tiktok    post     clockworks/tiktok-profile-scraper $0.0030 / post
  *
  * postResult is what the brand-feed page prices a "posts per brand" scrape
  * at. The Instagram figure is the literal the page carried inline before it
  * moved here (the sum of the actor's "post" and "post-details" events, so it
  * reads at the detailedData price even on a basicData run — high, as above).
- * The TikTok figure is the store's FREE-tier per-item price on 2026-09-22 and
- * matches the per-item cost the Enrich route measured from a real run.
+ * The TikTok figure is the store's FREE-tier per-result price on 2026-09-22,
+ * confirmed by a 12-post run billed at $0.036. xmolodtsov at $0.00075 would
+ * be 4x cheaper and is what Enrich runs, but its developer caps the FREE
+ * Apify plan to 5 runs a month at 1 post per profile (see
+ * startTikTokPostScraper in lib/apify.ts), so it cannot feed a brand scrape
+ * on this account.
  *
  * Higher subscription tiers are cheaper, so these read high for anyone on a
  * paid plan. That is deliberate: an estimate that reads low is worse than one
@@ -50,7 +54,7 @@ import type { DiscoveryMode, SearchSource } from './types';
  */
 export const ACTOR_PRICES_USD = {
   instagram: { hashtagResult: 0.0026, profileResult: 0.0026, postResult: 0.0027 },
-  tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050, postResult: 0.00075 },
+  tiktok:    { hashtagResult: 0.0037, profileResult: 0.0050, postResult: 0.003 },
 } as const;
 
 /**

@@ -527,24 +527,37 @@ export async function startTikTokProfileScraper(
 /**
  * Brand feed on TikTok: the last N posts of ONE profile.
  *
- * xmolodtsov~tiktok-profile-scraper — the same actor the Enrich route runs
- * inline for creator posts, chosen over clockworks on price: $0.00075 per post
- * against $0.003 (clockworks~tiktok-profile-scraper) and $0.0037 + $0.001 per
- * run (clockworks~tiktok-scraper), all FREE-tier store prices on 2026-09-22.
- * Twelve posts of one brand is $0.009.
+ * clockworks~tiktok-profile-scraper, $0.003 per post at the FREE tier. Twelve
+ * posts of one brand is $0.036.
  *
- * Output shape: verified in commit c3b6f16 (2026-09-04), which diffed 13 posts
- * of one creator across clockworks and this actor and found detailedMentions,
- * mentions, isSponsored, isAd, authorMeta, the engagement counts and
- * createTimeISO present and equal on both. detailedMentions is the field the
- * brand-feed detector reads — it is the only one that carries usernames rather
- * than display names (docs/tiktok-truncation-repair.md).
+ * NOT xmolodtsov~tiktok-profile-scraper, although it is 4x cheaper on the
+ * store ($0.00075) and is what the Enrich route runs. Its developer caps the
+ * Apify FREE plan in the actor itself — the run log on 2026-09-22 reads
+ * "Free plan: run 2/5 this month, capped at the first 10 profiles with 1 post
+ * each (a limit set by the developer, not by Apify)", and the sixth run that
+ * month returned zero items. The cap arrived with build 0.1.10 after the
+ * 2026-09-04 swap verification; Enrich passes on 09-05 and 09-06 still got
+ * 15 posts a profile. It is invisible in pricingInfos, the input schema and
+ * the store README; only a run log shows it. On a paid Apify plan the cheaper
+ * actor is the right choice again, and the swap back is this id plus
+ * ACTOR_PRICES_USD.tiktok.postResult.
  *
- * Input is the bare handle, the only form verified against this actor
- * (app/api/enrich/process/route.ts). excludePinnedPosts because a brand's
- * pinned posts are its oldest and would come back on every re-scrape; the
- * Enrich route does not send it, and that difference is deliberate — this is
- * a feed read, not an archive read.
+ * Input shape is the same on both actors: { profiles, resultsPerPage,
+ * excludePinnedPosts }. Verified on this actor by run H2vg1ZgDrjZxKqI2A
+ * (rhode, 12 posts, $0.036): 12 items, detailedMentions present on 12 and
+ * non-empty on 7, isPinned false on all, no plan notice in the log.
+ *
+ * Output shape: commit c3b6f16 (2026-09-04) diffed 13 posts of one creator
+ * across clockworks and xmolodtsov and found detailedMentions, mentions,
+ * isSponsored, isAd, authorMeta, the engagement counts and createTimeISO
+ * present and equal on both. detailedMentions is the field the brand-feed
+ * detector reads — it is the only one that carries usernames rather than
+ * display names (docs/tiktok-truncation-repair.md).
+ *
+ * Input is the bare handle. excludePinnedPosts because a brand's pinned posts
+ * are its oldest and would come back on every re-scrape; the Enrich route
+ * does not send it, and that difference is deliberate — this is a feed read,
+ * not an archive read.
  *
  * A handle the actor cannot resolve still returns (and bills) one item; the
  * caller treats an empty or error-only dataset as "0 posts", which the
@@ -554,7 +567,7 @@ export async function startTikTokPostScraper(
   handle: string,
   resultsPerPage: number = 12
 ): Promise<{ runId: string; datasetId?: string }> {
-  const actorId = 'xmolodtsov~tiktok-profile-scraper';
+  const actorId = 'clockworks~tiktok-profile-scraper';
   const input = {
     profiles: [handle.replace(/^@/, '').toLowerCase()],
     resultsPerPage,

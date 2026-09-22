@@ -247,14 +247,16 @@ test('brand feed on Instagram: the default 25 x 12 quotes $0.81, the literal the
   assert.equal(e.postsUsd, 300 * ACTOR_PRICES_USD.instagram.postResult);
 });
 
-test('brand feed on TikTok: 25 x 12 quotes $0.225 — 3.6x cheaper per post than Instagram', () => {
+test('brand feed on TikTok: 25 x 12 quotes $0.90 — clockworks at $0.003, dearer per post than Instagram', () => {
   const e = estimateBrandFeedCost('tiktok', 25, 12);
   assert.equal(e.posts, 300);
   assert.equal(e.postsUsd, 300 * ACTOR_PRICES_USD.tiktok.postResult);
-  assert.equal(Math.round(e.postsUsd * 1000) / 1000, 0.225);
+  assert.equal(round(e.postsUsd), 0.9);
+  // The order matters: xmolodtsov at $0.00075 would invert it, and that actor
+  // is capped on the free plan. A quote below Instagram's is the wrong actor.
   assert.ok(
-    ACTOR_PRICES_USD.tiktok.postResult < ACTOR_PRICES_USD.instagram.postResult / 3,
-    'xmolodtsov at $0.00075 against the Instagram post scraper at $0.0027',
+    ACTOR_PRICES_USD.tiktok.postResult > ACTOR_PRICES_USD.instagram.postResult,
+    'clockworks at $0.003 against the Instagram post scraper at $0.0027',
   );
 });
 

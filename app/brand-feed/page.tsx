@@ -70,7 +70,7 @@ const COVERAGE_FIELDS: Record<Platform, { key: string; label: string; note: stri
 
 const PLATFORM_OPTIONS: { value: Platform; label: string; desc: string }[] = [
   { value: 'instagram', label: 'Instagram', desc: 'apify/instagram-post-scraper · coauthors, tags and caption mentions' },
-  { value: 'tiktok', label: 'TikTok', desc: 'xmolodtsov/tiktok-profile-scraper · detailedMentions only, brands flagged tiktok' },
+  { value: 'tiktok', label: 'TikTok', desc: 'clockworks/tiktok-profile-scraper · detailedMentions only, brands flagged tiktok' },
 ];
 
 const profileUrl = (platform: Platform, handle: string) =>
