@@ -89,6 +89,17 @@ export interface MeasuredHandle {
    * that is the worst possible place for a silent discrepancy.
    */
   saved: boolean;
+  /**
+   * The (platform, handle) was already in the database before this run.
+   *
+   * Only meaningful when `saved` is true: it says the write refreshed an
+   * existing profile rather than creating a creator. Reconciled from
+   * saveCreators' existingHandles the same way `saved` is from savedHandles,
+   * so it is never recorded on intent either. Discovery never sees a true
+   * value here — it filters known handles out before scraping — but manual
+   * add deliberately does not, and reports it per handle.
+   */
+  existing: boolean;
 }
 
 export interface ImportOutcome {
@@ -341,7 +352,7 @@ export async function runProfileImport(
         cacheOnly.push({ handle, platform, followerCount: mapped.followerCount });
         measured.push({
           handle, platform, followerCount: mapped.followerCount,
-          status: importStatus, decision, saved: false,
+          status: importStatus, decision, saved: false, existing: false,
         });
         continue;
       }
@@ -350,7 +361,7 @@ export async function runProfileImport(
       // recording an intention.
       pending.push({
         handle, platform, followerCount: mapped.followerCount,
-        status: importStatus, decision, saved: false,
+        status: importStatus, decision, saved: false, existing: false,
       });
 
       creators.push({
@@ -384,8 +395,13 @@ export async function runProfileImport(
     // list saveDiscoveredCreators confirmed; anything absent from it failed and
     // must not be reported as imported.
     const confirmed = new Set(result.savedHandles.map(h => norm(h)));
+    const existed = new Set((result.existingHandles ?? []).map(h => norm(h)));
     for (const entry of pending) {
-      measured.push({ ...entry, saved: confirmed.has(entry.handle) });
+      measured.push({
+        ...entry,
+        saved: confirmed.has(entry.handle),
+        existing: existed.has(entry.handle),
+      });
     }
     pending.length = 0;
 

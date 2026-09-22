@@ -46,6 +46,16 @@ export interface ImportResult {
   failed: number;
   total: number;
   savedHandles: string[];
+  /**
+   * The subset of savedHandles whose (platform, handle) already existed before
+   * this call, in any population. The write still happens — the profile's
+   * counts, bio and picture are refreshed — but no creator row was created.
+   *
+   * Returned so a caller can say "already existed" rather than "saved". The
+   * function has always known this (the lookup below) and was throwing the
+   * fact away; the manual-add page needs it to report per handle.
+   */
+  existingHandles: string[];
   errors: string[];
 }
 
@@ -99,6 +109,7 @@ export async function saveDiscoveredCreators(
   let failed = 0;
   const errors: string[] = [];
   const savedHandles: string[] = [];
+  const existingHandles: string[] = [];
 
   for (const creator of creators) {
     try {
@@ -135,6 +146,7 @@ export async function saveDiscoveredCreators(
         .maybeSingle();
 
       let creatorId: string;
+      const existed = !!existingProfile;
 
       if (existingProfile) {
         creatorId = existingProfile.creator_id;
@@ -277,6 +289,7 @@ export async function saveDiscoveredCreators(
 
       saved++;
       savedHandles.push(handle);
+      if (existed) existingHandles.push(handle);
     } catch (err: any) {
       console.error(`Error saving ${creator.handle}:`, err.message);
       errors.push(`${creator.handle}: ${err.message}`);
@@ -284,5 +297,5 @@ export async function saveDiscoveredCreators(
     }
   }
 
-  return { saved, failed, total: creators.length, savedHandles, errors };
+  return { saved, failed, total: creators.length, savedHandles, existingHandles, errors };
 }

@@ -38,7 +38,7 @@ function saveSpy() {
     calls.push({ creators: [...creators], platform });
     return {
       saved: creators.length, failed: 0, total: creators.length,
-      savedHandles: creators.map(c => c.handle), errors: [],
+      savedHandles: creators.map(c => c.handle), existingHandles: [], errors: [],
     };
   };
   return { calls, fn };
