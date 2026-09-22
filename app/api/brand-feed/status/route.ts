@@ -6,6 +6,7 @@ import {
   BRAND_FEED_PLATFORMS,
   type BrandFeedScope,
 } from '@/lib/brandFeedQueue';
+import { resolveTikTokPostActor, tiktokPostPrice } from '@/lib/discoveryCost';
 
 const SCOPES: BrandFeedScope[] = ['verified_brands', 'classified_brands', 'all_brands'];
 
@@ -84,8 +85,18 @@ export async function GET() {
     );
     const brandFeedEdgesByPlatform = Object.fromEntries(edgeCounts);
 
+    // The TikTok post actor is an environment override; the page cannot read
+    // process.env, so the resolved id and its price are reported here and
+    // the cost line follows them.
+    const tiktokPostActor = resolveTikTokPostActor(process.env.APIFY_TIKTOK_POST_ACTOR);
+
     return NextResponse.json({
       migrationsApplied: true,
+      tiktokPostActor: {
+        id: tiktokPostActor.id,
+        source: tiktokPostActor.source,
+        pricePerPost: tiktokPostPrice(tiktokPostActor.id),
+      },
       // Instagram, under the names the page has always read.
       scopes: scopesFor('instagram'),
       brandFeedEdges: brandFeedEdgesByPlatform.instagram,

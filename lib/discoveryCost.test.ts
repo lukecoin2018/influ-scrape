@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   estimateDiscoveryCost,
   estimateBrandFeedCost,
+  resolveTikTokPostActor,
+  tiktokPostPrice,
+  DEFAULT_TIKTOK_POST_ACTOR,
+  TIKTOK_POST_ACTOR_PRICES_USD,
   AUTHORS_PER_POST,
   ACTOR_PRICES_USD,
   BRAND_PROFILES_PER_POST,
@@ -262,5 +266,42 @@ test('brand feed on TikTok: 25 x 12 quotes $0.90 — clockworks at $0.003, deare
 
 test('brand feed: the estimate moves with the platform, and never goes negative', () => {
   assert.notEqual(estimateBrandFeedCost('tiktok', 3, 12).postsUsd, estimateBrandFeedCost('instagram', 3, 12).postsUsd);
-  assert.deepEqual(estimateBrandFeedCost('tiktok', -1, 12), { posts: 0, postsUsd: 0 });
+  assert.deepEqual(estimateBrandFeedCost('tiktok', -1, 12), { posts: 0, postsUsd: 0, pricePerPost: 0.003 });
+});
+
+// ── The TikTok post actor is an env override, and the price follows it ───────
+
+test('APIFY_TIKTOK_POST_ACTOR unset, empty or blank resolves to the clockworks default', () => {
+  for (const v of [undefined, null, '', '   ']) {
+    assert.deepEqual(resolveTikTokPostActor(v), { id: DEFAULT_TIKTOK_POST_ACTOR, source: 'default' });
+  }
+  assert.equal(DEFAULT_TIKTOK_POST_ACTOR, 'clockworks~tiktok-profile-scraper');
+});
+
+test('APIFY_TIKTOK_POST_ACTOR set resolves verbatim, trimmed, with / accepted for ~', () => {
+  assert.deepEqual(resolveTikTokPostActor(' xmolodtsov~tiktok-profile-scraper '), { id: 'xmolodtsov~tiktok-profile-scraper', source: 'env' });
+  assert.deepEqual(resolveTikTokPostActor('xmolodtsov/tiktok-profile-scraper'), { id: 'xmolodtsov~tiktok-profile-scraper', source: 'env' });
+});
+
+test('the per-post price follows the actor id; an unknown actor reads at the dearest known rate', () => {
+  assert.equal(tiktokPostPrice('clockworks~tiktok-profile-scraper'), 0.003);
+  assert.equal(tiktokPostPrice('xmolodtsov~tiktok-profile-scraper'), 0.00075);
+  assert.equal(tiktokPostPrice('someone~new-actor'), Math.max(...Object.values(TIKTOK_POST_ACTOR_PRICES_USD)));
+  assert.equal(tiktokPostPrice(DEFAULT_TIKTOK_POST_ACTOR), ACTOR_PRICES_USD.tiktok.postResult,
+    'the platform table carries the default actor price');
+});
+
+test('the brand-feed ESTIMATE follows the override, not the platform table', () => {
+  const dflt = estimateBrandFeedCost('tiktok', 25, 12);
+  const viaDefaultId = estimateBrandFeedCost('tiktok', 25, 12, { tiktokPostActor: DEFAULT_TIKTOK_POST_ACTOR });
+  const xm = estimateBrandFeedCost('tiktok', 25, 12, { tiktokPostActor: 'xmolodtsov~tiktok-profile-scraper' });
+  assert.deepEqual(viaDefaultId, dflt);
+  assert.equal(round(dflt.postsUsd), 0.9);
+  assert.equal(xm.pricePerPost, 0.00075);
+  assert.equal(Math.round(xm.postsUsd * 1000) / 1000, 0.225);
+  // Instagram ignores the option entirely.
+  assert.deepEqual(
+    estimateBrandFeedCost('instagram', 25, 12, { tiktokPostActor: 'xmolodtsov~tiktok-profile-scraper' }),
+    estimateBrandFeedCost('instagram', 25, 12),
+  );
 });

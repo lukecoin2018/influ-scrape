@@ -298,9 +298,14 @@ async function scrapeFeed(
   platform: BrandFeedPlatform,
   postsPerBrand: number,
   dataDetailLevel: 'basicData' | 'detailedData'
-): Promise<{ perPost: BrandPostCollabs[]; fieldCoverage: Record<string, number>; itemsReturned: number }> {
+): Promise<{
+  perPost: BrandPostCollabs[];
+  fieldCoverage: Record<string, number>;
+  itemsReturned: number;
+  postActor: string;
+}> {
   if (platform === 'tiktok') {
-    const { runId } = await startTikTokPostScraper(brandHandle, postsPerBrand);
+    const { runId, actorId } = await startTikTokPostScraper(brandHandle, postsPerBrand);
     const { datasetId } = await waitForRun(runId);
     if (!datasetId) throw new Error(`TikTok post scrape for ${brandHandle} returned no dataset`);
 
@@ -312,7 +317,12 @@ async function scrapeFeed(
     const perPost = applyRepeatMentionConfidence(
       rawPosts.map(post => detectCollabsInTikTokBrandPost(post, brandHandle))
     );
-    return { perPost, fieldCoverage: summariseTikTokFieldCoverage(rawPosts), itemsReturned: items.length };
+    return {
+      perPost,
+      fieldCoverage: summariseTikTokFieldCoverage(rawPosts),
+      itemsReturned: items.length,
+      postActor: actorId,
+    };
   }
 
   const { runId } = await startPostScraper([brandHandle], postsPerBrand, dataDetailLevel);
@@ -322,7 +332,12 @@ async function scrapeFeed(
   const items = await getDatasetItems<BrandFeedPost>(datasetId, postsPerBrand);
   const rawPosts = items.filter(isPostItem).slice(0, postsPerBrand);
   const perPost = rawPosts.map(post => detectCollabsInBrandPost(post, brandHandle));
-  return { perPost, fieldCoverage: summariseFieldCoverage(rawPosts), itemsReturned: items.length };
+  return {
+    perPost,
+    fieldCoverage: summariseFieldCoverage(rawPosts),
+    itemsReturned: items.length,
+    postActor: 'apify~instagram-post-scraper',
+  };
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -369,7 +384,7 @@ export async function POST(request: NextRequest) {
     );
 
     // 2. Scrape the brand's own feed and 3. extract collaboration candidates.
-    const { perPost, fieldCoverage, itemsReturned } = await scrapeFeed(
+    const { perPost, fieldCoverage, itemsReturned, postActor } = await scrapeFeed(
       brandHandle, platform, postsPerBrand, dataDetailLevel
     );
     const postsScraped = perPost.length;
@@ -492,6 +507,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       handle: brandHandle,
       platform,
+      postActor,
       brandId,
       brandCreated,
       cancelledMidItem: abortedMidItem,

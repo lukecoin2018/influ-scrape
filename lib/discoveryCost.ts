@@ -35,18 +35,16 @@ import type { DiscoveryMode, SearchSource } from './types';
  *   instagram post     apify/instagram-post-scraper      $0.0027 / post
  *   tiktok    hashtag  clockworks/tiktok-scraper         $0.0037 / result
  *   tiktok    profile  abe/tiktok-profile-scraper        $0.0050 / profile
- *   tiktok    post     clockworks/tiktok-profile-scraper $0.0030 / post
+ *   tiktok    post     clockworks/tiktok-profile-scraper $0.0030 / post  (default actor; see TIKTOK_POST_ACTOR_PRICES_USD)
  *
  * postResult is what the brand-feed page prices a "posts per brand" scrape
  * at. The Instagram figure is the literal the page carried inline before it
  * moved here (the sum of the actor's "post" and "post-details" events, so it
  * reads at the detailedData price even on a basicData run — high, as above).
- * The TikTok figure is the store's FREE-tier per-result price on 2026-09-22,
- * confirmed by a 12-post run billed at $0.036. xmolodtsov at $0.00075 would
- * be 4x cheaper and is what Enrich runs, but its developer caps the FREE
- * Apify plan to 5 runs a month at 1 post per profile (see
- * startTikTokPostScraper in lib/apify.ts), so it cannot feed a brand scrape
- * on this account.
+ * The TikTok figure is the DEFAULT post actor's price; the actor is
+ * overridable by APIFY_TIKTOK_POST_ACTOR and the brand-feed estimate looks
+ * the price up by actor id (TIKTOK_POST_ACTOR_PRICES_USD) so the cost line
+ * follows the override.
  *
  * Higher subscription tiers are cheaper, so these read high for anyone on a
  * paid plan. That is deliberate: an estimate that reads low is worse than one
@@ -58,9 +56,65 @@ export const ACTOR_PRICES_USD = {
 } as const;
 
 /**
+ * TikTok post scrapers the brand feed can run, by actor id, at the FREE tier
+ * on 2026-09-22.
+ *
+ * The actor is chosen at runtime by APIFY_TIKTOK_POST_ACTOR (see
+ * resolveTikTokPostActor), so the price has to be looked up by id rather than
+ * read off the platform table: a cost line that did not follow the actor
+ * would quote clockworks money for an xmolodtsov run, or the reverse.
+ *
+ *   clockworks~tiktok-profile-scraper   $0.003    the default; no plan cap
+ *   xmolodtsov~tiktok-profile-scraper   $0.00075  4x cheaper, but its developer
+ *                                                 caps the FREE Apify plan to 5
+ *                                                 runs a month at 1 post per
+ *                                                 profile — usable on a paid
+ *                                                 plan only
+ *
+ * An actor not in this table is priced at the DEAREST known rate, for the
+ * same reason every other estimate here reads high: an unknown actor quoted
+ * cheap is worse than one quoted dear.
+ */
+export const DEFAULT_TIKTOK_POST_ACTOR = 'clockworks~tiktok-profile-scraper';
+
+export const TIKTOK_POST_ACTOR_PRICES_USD: Record<string, number> = {
+  'clockworks~tiktok-profile-scraper': 0.003,
+  'xmolodtsov~tiktok-profile-scraper': 0.00075,
+};
+
+/**
+ * The actor id the TikTok brand feed runs, from the environment.
+ *
+ * Pure: the caller passes process.env.APIFY_TIKTOK_POST_ACTOR (or nothing)
+ * so this can be tested and so the client page never touches process.env.
+ * Whitespace-only and empty values mean "unset". The id is used verbatim in
+ * the Apify URL, so the `author~name` form is required; a `/` is rewritten
+ * to `~` because that is the only other way people write it.
+ */
+export function resolveTikTokPostActor(envValue: string | undefined | null): {
+  id: string;
+  source: 'env' | 'default';
+} {
+  const trimmed = (envValue ?? '').trim().replace('/', '~');
+  return trimmed
+    ? { id: trimmed, source: 'env' }
+    : { id: DEFAULT_TIKTOK_POST_ACTOR, source: 'default' };
+}
+
+/** Per-post price for a TikTok post actor id; unknown ids read at the dearest known rate. */
+export function tiktokPostPrice(actorId: string): number {
+  return TIKTOK_POST_ACTOR_PRICES_USD[actorId]
+    ?? Math.max(...Object.values(TIKTOK_POST_ACTOR_PRICES_USD));
+}
+
+/**
  * The post-scrape half of a brand-feed run: brands x posts per brand at the
- * platform's per-post price. The profile scrape that follows is not estimated,
- * because how many new handles a feed yields is exactly what the run measures.
+ * per-post price. The profile scrape that follows is not estimated, because
+ * how many new handles a feed yields is exactly what the run measures.
+ *
+ * On TikTok the price follows the actor: pass the resolved actor id (the
+ * status route reports it) and the quote is that actor's. Without one, the
+ * default actor's price applies — which is also ACTOR_PRICES_USD.tiktok.postResult.
  *
  * A function rather than an inline expression on the page so a test can assert
  * the page's number is the table's number (see deferred-cleanups item 27 for
@@ -69,10 +123,14 @@ export const ACTOR_PRICES_USD = {
 export function estimateBrandFeedCost(
   platform: keyof typeof ACTOR_PRICES_USD,
   brands: number,
-  postsPerBrand: number
-): { posts: number; postsUsd: number } {
+  postsPerBrand: number,
+  options: { tiktokPostActor?: string } = {}
+): { posts: number; postsUsd: number; pricePerPost: number } {
   const posts = Math.max(0, brands) * Math.max(0, postsPerBrand);
-  return { posts, postsUsd: posts * ACTOR_PRICES_USD[platform].postResult };
+  const pricePerPost = platform === 'tiktok' && options.tiktokPostActor
+    ? tiktokPostPrice(options.tiktokPostActor)
+    : ACTOR_PRICES_USD[platform].postResult;
+  return { posts, postsUsd: posts * pricePerPost, pricePerPost };
 }
 
 /**

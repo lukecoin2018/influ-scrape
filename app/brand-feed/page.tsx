@@ -38,6 +38,8 @@ interface StatusData {
   brandFeedEdges: number;
   scopesByPlatform?: Record<Platform, Record<Scope, ScopeStats>>;
   brandFeedEdgesByPlatform?: Record<Platform, number>;
+  /** The TikTok post actor the server resolved from APIFY_TIKTOK_POST_ACTOR. */
+  tiktokPostActor?: { id: string; source: 'env' | 'default'; pricePerPost: number };
 }
 
 /**
@@ -70,7 +72,8 @@ const COVERAGE_FIELDS: Record<Platform, { key: string; label: string; note: stri
 
 const PLATFORM_OPTIONS: { value: Platform; label: string; desc: string }[] = [
   { value: 'instagram', label: 'Instagram', desc: 'apify/instagram-post-scraper · coauthors, tags and caption mentions' },
-  { value: 'tiktok', label: 'TikTok', desc: 'clockworks/tiktok-profile-scraper · detailedMentions only, brands flagged tiktok' },
+  // The TikTok actor is filled in from the status route: it is an env override.
+  { value: 'tiktok', label: 'TikTok', desc: 'detailedMentions only, brands flagged tiktok' },
 ];
 
 const profileUrl = (platform: Platform, handle: string) =>
@@ -307,7 +310,10 @@ export default function BrandFeedPage() {
   const platformScopes = status?.scopesByPlatform?.[platform] ?? (platform === 'instagram' ? status?.scopes : undefined);
   const activeScope = platformScopes?.[scope];
   const platformEdges = status?.brandFeedEdgesByPlatform?.[platform] ?? (platform === 'instagram' ? status?.brandFeedEdges : undefined);
-  const estimate = estimateBrandFeedCost(platform, batchSize, postsPerBrand);
+  const tiktokPostActor = status?.tiktokPostActor;
+  const estimate = estimateBrandFeedCost(platform, batchSize, postsPerBrand, {
+    tiktokPostActor: tiktokPostActor?.id,
+  });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -404,7 +410,19 @@ export default function BrandFeedPage() {
                   />
                   <div>
                     <div className="font-medium text-sm text-slate-800">{opt.label}</div>
-                    <div className="text-xs text-slate-500">{opt.desc}</div>
+                    <div className="text-xs text-slate-500">
+                      {opt.value === 'tiktok' && tiktokPostActor
+                        ? `${tiktokPostActor.id.replace('~', '/')} · ${opt.desc}`
+                        : opt.desc}
+                    </div>
+                    {opt.value === 'tiktok' && tiktokPostActor && (
+                      <div className="text-xs text-slate-400 font-mono">
+                        {tiktokPostActor.source === 'env'
+                          ? 'APIFY_TIKTOK_POST_ACTOR'
+                          : 'default · set APIFY_TIKTOK_POST_ACTOR to override'}
+                        {' '}· ${tiktokPostActor.pricePerPost}/post
+                      </div>
+                    )}
                   </div>
                 </label>
               ))}
@@ -487,7 +505,7 @@ export default function BrandFeedPage() {
                 disabled={busy}
               />
               <p className="text-xs text-slate-500 mt-1">
-                Est. ~${estimate.postsUsd.toFixed(2)} of post scraping ({estimate.posts.toLocaleString()} posts on {platform})
+                Est. ~${estimate.postsUsd.toFixed(2)} of post scraping ({estimate.posts.toLocaleString()} posts on {platform} at ${estimate.pricePerPost}/post)
               </p>
             </div>
             <div>

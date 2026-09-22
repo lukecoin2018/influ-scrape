@@ -1011,9 +1011,11 @@ on 09-05 and 09-06 still stored 15 posts a profile. **The next Enrich TikTok
 pass on this account will store one post per profile for at most 10 profiles,
 and nothing at all after five runs.** Nothing in pricingInfos, the input
 schema or the store README says so; only the run log does. The brand feed
-went to clockworks~tiktok-profile-scraper ($0.003, uncapped, verified by run
-H2vg1ZgDrjZxKqI2A). Enrich needs the same swap or a paid Apify plan before its
-next TikTok run, whichever is decided first.
+defaults to clockworks~tiktok-profile-scraper ($0.003, uncapped, verified by
+run H2vg1ZgDrjZxKqI2A) and takes the actor from APIFY_TIKTOK_POST_ACTOR, so a
+paid plan can move it back to xmolodtsov with an .env edit. Enrich has no such
+override: it needs the same env switch, or a paid Apify plan, before its next
+TikTok run — whichever is decided first.
 
 **Trigger:** the next change to the Enrich route's TikTok branch for any other
 reason, or the first enrich run that hangs on the actor. Related: item 7, which
