@@ -4,11 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { useChunkedRunner } from '@/lib/useChunkedRunner';
 import { DEFAULT_MIN_FOLLOWERS, DEFAULT_MAX_FOLLOWERS } from '@/lib/followerRange';
 import { parseHandleList } from '@/lib/handles';
+import { estimateBrandFeedCost } from '@/lib/discoveryCost';
 
 // Chunks of 10, 2s apart — the cadence the other batch runners in this app use.
 const CHUNK_SIZE = 10;
 const CHUNK_DELAY_MS = 2000;
 
+type Platform = 'instagram' | 'tiktok';
 type Scope = 'verified_brands' | 'classified_brands' | 'all_brands';
 type Order = 'never_scraped' | 'stale_first' | 'top_creators' | 'casting_fit';
 
@@ -34,18 +36,52 @@ interface StatusData {
   error?: string;
   scopes: Record<Scope, ScopeStats>;
   brandFeedEdges: number;
+  scopesByPlatform?: Record<Platform, Record<Scope, ScopeStats>>;
+  brandFeedEdgesByPlatform?: Record<Platform, number>;
+  /** The TikTok post actor the server resolved from APIFY_TIKTOK_POST_ACTOR. */
+  tiktokPostActor?: { id: string; source: 'env' | 'default'; pricePerPost: number };
 }
 
-interface FieldCoverage {
-  posts: number;
-  withTaggedUsers: number;
-  withCoauthorProducers: number;
-  withMentions: number;
-  withCaption: number;
-}
+/**
+ * Per-platform: the Instagram actor's collaboration fields, or the TikTok
+ * actor's. `posts` is always present; the rest are the platform's own keys,
+ * summed and labelled through COVERAGE_FIELDS below.
+ */
+type FieldCoverage = { posts: number } & Record<string, number>;
+
+/**
+ * Which coverage keys to show per platform, with what they mean. On TikTok
+ * the field that matters is detailedMentions, the only one carrying real
+ * usernames; "field returned" vs "non-empty" are shown separately so an actor
+ * that stops emitting it cannot look like brands that mention nobody.
+ */
+const COVERAGE_FIELDS: Record<Platform, { key: string; label: string; note: string }[]> = {
+  instagram: [
+    { key: 'withCoauthorProducers', label: 'coauthorProducers', note: 'collab posts' },
+    { key: 'withTaggedUsers', label: 'taggedUsers', note: 'tagged in media' },
+    { key: 'withMentions', label: 'mentions', note: 'actor-parsed @s' },
+    { key: 'withCaption', label: 'caption', note: 'has caption' },
+  ],
+  tiktok: [
+    { key: 'withDetailedMentionsField', label: 'detailedMentions returned', note: 'field present, even empty' },
+    { key: 'withDetailedMentions', label: 'detailedMentions non-empty', note: 'the only source read' },
+    { key: 'withMentions', label: 'mentions', note: 'display names — never read' },
+    { key: 'withCaption', label: 'caption', note: 'has caption' },
+  ],
+};
+
+const PLATFORM_OPTIONS: { value: Platform; label: string; desc: string }[] = [
+  { value: 'instagram', label: 'Instagram', desc: 'apify/instagram-post-scraper · coauthors, tags and caption mentions' },
+  // The TikTok actor is filled in from the status route: it is an env override.
+  { value: 'tiktok', label: 'TikTok', desc: 'detailedMentions only, brands flagged tiktok' },
+];
+
+const profileUrl = (platform: Platform, handle: string) =>
+  platform === 'tiktok' ? `https://www.tiktok.com/@${handle}` : `https://instagram.com/${handle}`;
 
 interface BrandResult {
   handle: string;
+  platform: Platform;
   brandCreated: boolean;
   postsScraped: number;
   candidatesFound: number;
@@ -54,6 +90,9 @@ interface BrandResult {
   knownCreators: number;
   newHandles: number;
   newHandlesSkipped: number;
+  /** Sent to the profile scraper, nothing came back. */
+  notFound: number;
+  notFoundHandles: string[];
   importedInRange: number;
   importedOutOfRangeHigh: number;
   importedOutOfRangeLow: number;
@@ -83,6 +122,7 @@ const ORDER_OPTIONS: { value: Order; label: string; desc: string }[] = [
 ];
 
 export default function BrandFeedPage() {
+  const [platform, setPlatform] = useState<Platform>('instagram');
   const [scope, setScope] = useState<Scope>('verified_brands');
   const [order, setOrder] = useState<Order>('never_scraped');
   const [batchSize, setBatchSize] = useState(25);
@@ -132,6 +172,7 @@ export default function BrandFeedPage() {
         body: JSON.stringify({
           handle: item.handle,
           brandId: item.brandId,
+          platform,
           postsPerBrand,
           dataDetailLevel: detailed ? 'detailedData' : 'basicData',
           minFollowers,
@@ -143,7 +184,7 @@ export default function BrandFeedPage() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return data as BrandResult;
     },
-    [postsPerBrand, detailed, minFollowers, maxFollowers]
+    [platform, postsPerBrand, detailed, minFollowers, maxFollowers]
   );
 
   const labelFor = useCallback((item: QueueItem) => `@${item.handle}`, []);
@@ -179,7 +220,7 @@ export default function BrandFeedPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          scope, order, batchSize, handles,
+          platform, scope, order, batchSize, handles,
           minLastPostCount: skipLowYield ? minLastPostCount : undefined,
           castingSampleFloor,
         }),
@@ -228,11 +269,12 @@ export default function BrandFeedPage() {
       edges: acc.edges + r.edgesWritten,
       edgesFromExcluded: acc.edgesFromExcluded + r.edgesFromEntityExcluded,
       known: acc.known + r.knownCreators,
+      notFound: acc.notFound + (r.notFound || 0),
       stubs: acc.stubs + (r.brandCreated ? 1 : 0),
     }),
     { posts: 0, candidates: 0, newHandles: 0, inRange: 0, outOfRange: 0,
       outOfRangeHigh: 0, outOfRangeLow: 0,
-      entityExcluded: 0, edges: 0, edgesFromExcluded: 0, known: 0, stubs: 0 }
+      entityExcluded: 0, edges: 0, edgesFromExcluded: 0, known: 0, notFound: 0, stubs: 0 }
   );
 
   // Kept apart rather than one ranked list: an eight-million-follower account
@@ -247,21 +289,31 @@ export default function BrandFeedPage() {
   const samplesHigh = samplesFor('out_of_range_high');
   const samplesLow = samplesFor('out_of_range_low');
 
-  const coverage = results.reduce(
-    (acc, r) => ({
-      posts: acc.posts + r.fieldCoverage.posts,
-      withTaggedUsers: acc.withTaggedUsers + r.fieldCoverage.withTaggedUsers,
-      withCoauthorProducers: acc.withCoauthorProducers + r.fieldCoverage.withCoauthorProducers,
-      withMentions: acc.withMentions + r.fieldCoverage.withMentions,
-      withCaption: acc.withCaption + r.fieldCoverage.withCaption,
-    }),
-    { posts: 0, withTaggedUsers: 0, withCoauthorProducers: 0, withMentions: 0, withCaption: 0 }
+  // Every key the platform's coverage summary returned, summed. The keys
+  // differ by platform (COVERAGE_FIELDS), so this does not name them.
+  const coverage = results.reduce<FieldCoverage>(
+    (acc, r) => {
+      for (const [key, value] of Object.entries(r.fieldCoverage || {})) {
+        if (typeof value === 'number') acc[key] = (acc[key] || 0) + value;
+      }
+      return acc;
+    },
+    { posts: 0 }
   );
+  // Results are read for whichever platform produced them; a run is one
+  // platform, so the first result's platform is the run's.
+  const resultsPlatform: Platform = results[0]?.platform ?? platform;
 
   const busy = isStarting || runner.isRunning;
   const per = (n: number) => (results.length > 0 ? (n / results.length).toFixed(1) : '—');
   const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
-  const activeScope = status?.scopes?.[scope];
+  const platformScopes = status?.scopesByPlatform?.[platform] ?? (platform === 'instagram' ? status?.scopes : undefined);
+  const activeScope = platformScopes?.[scope];
+  const platformEdges = status?.brandFeedEdgesByPlatform?.[platform] ?? (platform === 'instagram' ? status?.brandFeedEdges : undefined);
+  const tiktokPostActor = status?.tiktokPostActor;
+  const estimate = estimateBrandFeedCost(platform, batchSize, postsPerBrand, {
+    tiktokPostActor: tiktokPostActor?.id,
+  });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -271,7 +323,7 @@ export default function BrandFeedPage() {
             Brand Feed Discovery
           </h1>
           <p className="text-slate-600">
-            Scrape brands&apos; own Instagram feeds to find the creators they collaborate with
+            Scrape brands&apos; own Instagram or TikTok feeds to find the creators they collaborate with
           </p>
         </div>
 
@@ -296,17 +348,26 @@ export default function BrandFeedPage() {
         )}
 
         {/* Status */}
-        {status?.scopes && (
+        {platformScopes && (
           <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-slate-800">Queue Pools</h2>
+              <h2 className="text-lg font-bold text-slate-800">
+                Queue Pools · {platform === 'tiktok' ? 'TikTok' : 'Instagram'}
+              </h2>
               <span className="text-sm text-slate-500">
-                {status.brandFeedEdges.toLocaleString()} brand-feed edges recorded
+                {(platformEdges ?? 0).toLocaleString()} {platform} brand-feed edges recorded
               </span>
             </div>
+            {platform === 'tiktok' && (
+              <p className="text-xs text-slate-500 mb-4">
+                Each scope intersected with <span className="font-mono">mention_platforms ∋ tiktok</span>. Never-scraped
+                and stale read the TikTok stamp, so an Instagram scrape does not hide a brand here.
+                Orphan aliases have no flag and never enter these pools.
+              </p>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {SCOPE_OPTIONS.map(opt => {
-                const s = status.scopes?.[opt.value];
+                const s = platformScopes?.[opt.value];
                 if (!s) return null;
                 return (
                   <div
@@ -329,6 +390,45 @@ export default function BrandFeedPage() {
 
         {/* Config */}
         <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+          <div className="mb-5">
+            <label className="block text-sm font-medium text-slate-700 mb-2">Platform</label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {PLATFORM_OPTIONS.map(opt => (
+                <label
+                  key={opt.value}
+                  className={`flex items-start gap-3 cursor-pointer p-3 rounded-lg border-2 ${
+                    platform === opt.value ? 'border-violet-400 bg-violet-50' : 'border-slate-100 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="platform"
+                    checked={platform === opt.value}
+                    onChange={() => setPlatform(opt.value)}
+                    className="mt-0.5 accent-violet-600"
+                    disabled={busy}
+                  />
+                  <div>
+                    <div className="font-medium text-sm text-slate-800">{opt.label}</div>
+                    <div className="text-xs text-slate-500">
+                      {opt.value === 'tiktok' && tiktokPostActor
+                        ? `${tiktokPostActor.id.replace('~', '/')} · ${opt.desc}`
+                        : opt.desc}
+                    </div>
+                    {opt.value === 'tiktok' && tiktokPostActor && (
+                      <div className="text-xs text-slate-400 font-mono">
+                        {tiktokPostActor.source === 'env'
+                          ? 'APIFY_TIKTOK_POST_ACTOR'
+                          : 'default · set APIFY_TIKTOK_POST_ACTOR to override'}
+                        {' '}· ${tiktokPostActor.pricePerPost}/post
+                      </div>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-5">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Scope</label>
@@ -405,26 +505,33 @@ export default function BrandFeedPage() {
                 disabled={busy}
               />
               <p className="text-xs text-slate-500 mt-1">
-                Est. ~${(batchSize * postsPerBrand * 0.0027).toFixed(2)} of post scraping
+                Est. ~${estimate.postsUsd.toFixed(2)} of post scraping ({estimate.posts.toLocaleString()} posts on {platform} at ${estimate.pricePerPost}/post)
               </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Data detail</label>
-              <label className="flex items-start gap-2 cursor-pointer mt-2">
-                <input
-                  type="checkbox"
-                  checked={detailed}
-                  onChange={e => setDetailed(e.target.checked)}
-                  className="mt-0.5 accent-violet-600"
-                  disabled={busy}
-                />
-                <span className="text-sm text-slate-700">
-                  Use detailedData
-                  <span className="block text-xs text-slate-500">
-                    Paid add-on. Leave off unless field coverage below shows basicData is dropping tags.
+              {platform === 'instagram' ? (
+                <label className="flex items-start gap-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    checked={detailed}
+                    onChange={e => setDetailed(e.target.checked)}
+                    className="mt-0.5 accent-violet-600"
+                    disabled={busy}
+                  />
+                  <span className="text-sm text-slate-700">
+                    Use detailedData
+                    <span className="block text-xs text-slate-500">
+                      Paid add-on. Leave off unless field coverage below shows basicData is dropping tags.
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
+              ) : (
+                <p className="text-xs text-slate-500 mt-2">
+                  Not applicable. The TikTok actor has one detail level, and detailedMentions is on every item.
+                  Pinned posts are excluded so a re-scrape reads new posts, not the same pinned three.
+                </p>
+              )}
             </div>
           </div>
 
@@ -645,7 +752,9 @@ export default function BrandFeedPage() {
               <div className="text-center">
                 <div className="text-3xl font-bold text-slate-800">{per(totals.known)}</div>
                 <div className="text-xs text-slate-500">Known creators / brand</div>
-                <div className="text-xs text-slate-400">{totals.stubs} brand stubs created</div>
+                <div className="text-xs text-slate-400">
+                  {totals.stubs} brand stubs created{totals.notFound > 0 ? ` · ${totals.notFound} handles not found` : ''}
+                </div>
               </div>
             </div>
 
@@ -713,32 +822,39 @@ export default function BrandFeedPage() {
         {coverage.posts > 0 && (
           <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
             <h2 className="text-lg font-bold text-slate-800 mb-1">
-              Field coverage · {detailed ? 'detailedData' : 'basicData'}
+              Field coverage · {resultsPlatform === 'tiktok' ? 'TikTok' : (detailed ? 'detailedData' : 'basicData')}
             </h2>
             <p className="text-xs text-slate-500 mb-4">
               Share of the {coverage.posts} scraped posts that carried each collaboration field.
-              If coauthors and tags are present on basicData, there is no reason to pay for detailedData.
+              {resultsPlatform === 'instagram'
+                ? ' If coauthors and tags are present on basicData, there is no reason to pay for detailedData.'
+                : ' Only detailedMentions is read on TikTok; mentions[] holds display names and is shown for contrast.'}
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {[
-                ['coauthorProducers', coverage.withCoauthorProducers],
-                ['taggedUsers', coverage.withTaggedUsers],
-                ['mentions', coverage.withMentions],
-                ['caption', coverage.withCaption],
-              ].map(([label, value]) => (
-                <div key={label as string} className="text-center">
-                  <div className={`text-2xl font-bold ${(value as number) > 0 ? 'text-green-600' : 'text-slate-300'}`}>
-                    {pct(value as number, coverage.posts)}
+              {COVERAGE_FIELDS[resultsPlatform].map(({ key, label, note }) => {
+                const value = coverage[key] || 0;
+                return (
+                  <div key={key} className="text-center">
+                    <div className={`text-2xl font-bold ${value > 0 ? 'text-green-600' : 'text-slate-300'}`}>
+                      {pct(value, coverage.posts)}
+                    </div>
+                    <div className="text-xs text-slate-500 font-mono">{label}</div>
+                    <div className="text-xs text-slate-400">{value} posts · {note}</div>
                   </div>
-                  <div className="text-xs text-slate-500 font-mono">{label as string}</div>
-                  <div className="text-xs text-slate-400">{value as number} posts</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-            {coverage.withTaggedUsers === 0 && coverage.withCoauthorProducers === 0 && (
+            {resultsPlatform === 'instagram' && (coverage.withTaggedUsers || 0) === 0 && (coverage.withCoauthorProducers || 0) === 0 && (
               <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
                 No tags or coauthors came back on any post. If this run used basicData, re-run a
                 small batch with detailedData before concluding the brands simply don&apos;t tag.
+              </div>
+            )}
+            {resultsPlatform === 'tiktok' && coverage.posts > 0 && (coverage.withDetailedMentionsField || 0) < coverage.posts && (
+              <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                detailedMentions was missing on {coverage.posts - (coverage.withDetailedMentionsField || 0)} of {coverage.posts} posts.
+                Those posts yielded nothing by design &mdash; there is no fallback to display names. If this
+                is most of the run, the actor has changed shape; do not read the yield as &quot;brands mention nobody&quot;.
               </div>
             )}
           </div>
@@ -773,6 +889,7 @@ export default function BrandFeedPage() {
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Candidates</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="Dropped by brand_aliases / brands classification, before any profile scrape">Entity&nbsp;excl.</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700">Known</th>
+                    <th className="text-right py-2 px-3 font-semibold text-slate-700" title="Sent to the profile scraper, nothing came back — on TikTok, a caption token that is not an account">Not&nbsp;found</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles inside the follower range — imported and queued for enrichment">In&nbsp;range</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles above the follower max — imported with edges, excluded from pipelines">Above&nbsp;max</th>
                     <th className="text-right py-2 px-3 font-semibold text-slate-700" title="New handles below the follower min — imported with edges, excluded from pipelines; may grow into range later">Below&nbsp;min</th>
@@ -784,7 +901,7 @@ export default function BrandFeedPage() {
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="py-2 px-3">
                         <a
-                          href={`https://instagram.com/${r.handle}`}
+                          href={profileUrl(r.platform || resultsPlatform, r.handle)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-violet-600 hover:text-violet-800 font-medium"
@@ -808,6 +925,9 @@ export default function BrandFeedPage() {
                         {r.entityExcluded > 0 ? `−${r.entityExcluded}` : '—'}
                       </td>
                       <td className="py-2 px-3 text-right text-slate-600">{r.knownCreators}</td>
+                      <td className="py-2 px-3 text-right text-slate-500" title={(r.notFoundHandles || []).map(h => '@' + h).join(' ')}>
+                        {r.notFound > 0 ? `−${r.notFound}` : '—'}
+                      </td>
                       <td className="py-2 px-3 text-right text-green-600 font-medium">{r.importedInRange}</td>
                       <td className="py-2 px-3 text-right text-amber-600 font-medium">
                         {r.importedOutOfRangeHigh > 0 ? `−${r.importedOutOfRangeHigh}` : '—'}

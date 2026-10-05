@@ -1,183 +1,103 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { parseHandleList } from '@/lib/handles';
+import { ACTOR_PRICES_USD } from '@/lib/discoveryCost';
 
 type Platform = 'instagram' | 'tiktok';
 
-function slimInstagramCreator(creator: any) {
-  return {
-    handle: creator.handle,
-    fullName: creator.fullName || '',
-    bio: (creator.bio || '').slice(0, 500),
-    followerCount: creator.followerCount,
-    followingCount: creator.followingCount,
-    postsCount: creator.postsCount,
-    engagementRate: creator.engagementRate,
-    isVerified: creator.isVerified || false,
-    profilePicUrl: creator.profilePicUrl || '',
-    profileUrl: creator.profileUrl || '',
-    website: creator.website || '',
-    discoveredViaHashtags: ['manual_entry'],
-    platformData: {
-      is_business_account: creator.isBusinessAccount || false,
-      category_name: creator.categoryName || null,
-    },
-  };
+/** Mirrors LookupRow in app/api/add/lookup/route.ts. */
+interface LookupRow {
+  handle: string;
+  status: 'saved' | 'existing' | 'not_found' | 'error';
+  message?: string;
+  displayName: string | null;
+  followerCount: number | null;
+  engagementRate: number | null;
+  profileUrl: string | null;
+  hasPic: boolean;
+  importStatus: string | null;
 }
 
-function mapTikTokProfile(profile: any) {
-  const handle = (profile.username || '').toLowerCase();
-  return {
-    handle,
-    fullName: profile.displayName || '',
-    bio: (profile.bio || '').slice(0, 500),
-    followerCount: profile.followers?.raw || profile.followers || 0,
-    followingCount: profile.following?.raw || profile.following || 0,
-    postsCount: profile.videos?.raw || profile.videos || 0,
-    engagementRate: null,
-    isVerified: false,
-    profilePicUrl: profile.profileImage || '',
-    profileUrl: profile.profileUrl || `https://tiktok.com/@${handle}`,
-    website: '',
-    platformData: {
-      likes_count: profile['likes.raw'] || profile.likes?.raw || profile.likes_raw || profile.likes || 0,
-      video_count: profile['videos.raw'] || profile.videos?.raw || profile.videos_raw || profile.videos || 0,
-      tagline: profile.tagline || '',
-    },
+interface LookupResponse {
+  platform: Platform;
+  rows: LookupRow[];
+  invalid: { input: string; reason: string }[];
+  summary: {
+    attempted: number;
+    saved: number;
+    existing: number;
+    notFound: number;
+    errors: number;
+    unknownSize: number;
+    timedOut: boolean;
   };
+  estimatedCostUsd: number;
 }
 
+const STATUS_LABEL: Record<LookupRow['status'], { text: string; className: string }> = {
+  saved: { text: 'Saved', className: 'bg-green-100 text-green-800' },
+  existing: { text: 'Already existed', className: 'bg-blue-100 text-blue-800' },
+  not_found: { text: 'Not found', className: 'bg-amber-100 text-amber-800' },
+  error: { text: 'Error', className: 'bg-red-100 text-red-800' },
+};
+
+/**
+ * Add Creators by Handle.
+ *
+ * The page no longer talks to Apify. It parses the pasted list (URLs
+ * accepted), posts it once to /api/add/lookup, and renders what that route
+ * read back from the database. The route waits on the actor run itself, so
+ * one request covers scrape, map and save for either platform.
+ */
 export default function AddByHandlePage() {
   const [platform, setPlatform] = useState<Platform>('instagram');
   const [handlesInput, setHandlesInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState('');
-  const [creators, setCreators] = useState<any[]>([]);
-  const [savedCount, setSavedCount] = useState(0);
+  const [result, setResult] = useState<LookupResponse | null>(null);
+
+  // Parsed live, so the count and the rejects are visible before spending.
+  const parsed = useMemo(() => parseHandleList(handlesInput), [handlesInput]);
+  const pricePerProfile = ACTOR_PRICES_USD[platform].profileResult;
 
   const processHandles = async () => {
-    const handles = handlesInput
-      .split('\n')
-      .map(h => h.trim().toLowerCase().replace(/^@/, ''))
-      .filter(h => h.length > 0);
-
-    const uniqueHandles = Array.from(new Set(handles));
-
-    if (uniqueHandles.length === 0) {
-      alert('Please enter at least one handle');
+    if (parsed.valid.length === 0) {
+      alert('Please enter at least one valid handle');
       return;
     }
 
     setIsProcessing(true);
-    setProgress(`Starting lookup for ${uniqueHandles.length} handles...`);
-    setCreators([]);
-    setSavedCount(0);
+    setResult(null);
+    setProgress(
+      `Looking up ${parsed.valid.length} ${platform === 'instagram' ? 'Instagram' : 'TikTok'} ` +
+      `handle${parsed.valid.length === 1 ? '' : 's'}… this waits for the Apify run, usually under a minute.`,
+    );
 
     try {
-      // Start scrape using platform-specific route
-      const scrapeRoute = platform === 'instagram'
-        ? '/api/discover/start-profile-scrape'
-        : '/api/tiktok/start-profile-scrape';
-
-      const profileResponse = await fetch(scrapeRoute, {
+      const response = await fetch('/api/add/lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usernames: uniqueHandles }),
+        body: JSON.stringify({ platform, handles: parsed.valid }),
       });
+      const data = await response.json();
 
-      const profileData = await profileResponse.json();
-
-if (!profileResponse.ok || !profileData.runId) {
-  throw new Error(`Failed to start scrape: ${JSON.stringify(profileData)}`);
-}
-
-const { runId } = profileData;
-
-      // Poll for completion
-      let complete = false;
-      let runStatus: any = null;
-
-      while (!complete) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
-        const statusResponse = await fetch(`/api/discover/run-status/${runId}`);
-        runStatus = await statusResponse.json();
-
-        if (runStatus.status === 'SUCCEEDED') {
-          complete = true;
-        } else if (runStatus.status === 'FAILED') {
-          throw new Error('Profile scraping failed');
-        }
-
-        setProgress(`Scraping profiles... ${runStatus.status}`);
+      if (!response.ok) {
+        throw new Error(data?.error || `Lookup failed (${response.status})`);
       }
 
-      const datasetId = runStatus.datasetId;
-      if (!datasetId) throw new Error('No dataset ID returned from scraper');
-
-      const resultsResponse = await fetch(`/api/discover/dataset/${datasetId}`);
-      const profiles = await resultsResponse.json();
-
-      setProgress(`Found ${profiles.length} profiles. Mapping data...`);
-
-      // Map to creator format
-      let mappedCreators: any[];
-      if (platform === 'instagram') {
-        const { mapProfileToCreator } = await import('@/lib/apify');
-        mappedCreators = profiles.map((p: any) => {
-          const creator = mapProfileToCreator(p);
-          return slimInstagramCreator(creator);
-        });
-      } else {
-        const allMapped = profiles.map(mapTikTokProfile);
-        const seen = new Set<string>();
-        mappedCreators = allMapped.filter((c: any) => {
-          if (!c.handle || seen.has(c.handle)) return false;
-          seen.add(c.handle);
-          return true;
-        });
-      }
-
-      setCreators(mappedCreators);
-
-      // Save to database
-      setProgress('Saving to database...');
-      const BATCH_SIZE = 3;
-      let saved = 0;
-      let failed = 0;
-
-      for (let i = 0; i < mappedCreators.length; i += BATCH_SIZE) {
-        const batch = mappedCreators.slice(i, i + BATCH_SIZE);
-
-        try {
-          const response = await fetch('/api/database/save-creators', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ creators: batch, platform }),
-          });
-
-          if (response.ok) {
-            const result = await response.json();
-            saved += result.saved || 0;
-            failed += result.failed || 0;
-          } else {
-            console.error(`Batch ${Math.floor(i/BATCH_SIZE) + 1} failed`);
-            failed += batch.length;
-          }
-        } catch (err) {
-          console.error(`Batch error:`, err);
-          failed += batch.length;
-        }
-
-        setProgress(`Saving... ${saved} saved, ${failed} failed of ${mappedCreators.length}`);
-        await new Promise(r => setTimeout(r, 200));
-      }
-
-      setSavedCount(saved);
-      setProgress(`Complete! ${saved} creators saved.${failed > 0 ? ` ${failed} failed.` : ''}`);
-
-    } catch (error: any) {
-      setProgress(`Error: ${error.message}`);
+      const r = data as LookupResponse;
+      setResult(r);
+      const parts = [
+        `${r.summary.saved} saved`,
+        `${r.summary.existing} already existed`,
+        `${r.summary.notFound} not found`,
+      ];
+      if (r.summary.errors > 0) parts.push(`${r.summary.errors} failed`);
+      if (r.summary.timedOut) parts.push('stopped early: run budget exhausted');
+      setProgress(`Complete. ${parts.join(', ')}.`);
+    } catch (error: unknown) {
+      setProgress(`Error: ${error instanceof Error ? error.message : String(error)}`);
       console.error('Add by handle error:', error);
     } finally {
       setIsProcessing(false);
@@ -211,6 +131,7 @@ const { runId } = profileData;
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setPlatform('instagram')}
+                disabled={isProcessing}
                 className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
                   platform === 'instagram'
                     ? 'bg-pink-50 border-pink-500 text-pink-700'
@@ -221,6 +142,7 @@ const { runId } = profileData;
               </button>
               <button
                 onClick={() => setPlatform('tiktok')}
+                disabled={isProcessing}
                 className={`px-4 py-3 rounded-lg font-medium transition-all border-2 ${
                   platform === 'tiktok'
                     ? 'bg-black border-black text-white'
@@ -234,27 +156,40 @@ const { runId } = profileData;
 
           <div className="mb-6">
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              {platform === 'instagram' ? 'Instagram' : 'TikTok'} Handles (one per line)
+              {platform === 'instagram' ? 'Instagram' : 'TikTok'} handles or profile URLs (one per line)
             </label>
             <textarea
               value={handlesInput}
               onChange={(e) => setHandlesInput(e.target.value)}
               placeholder={platform === 'instagram'
-                ? '@fashionista\nstyleinfluencer\n@beautyblogger'
-                : '@tiktokcreator\ndancequeen\n@foodie'
+                ? '@fashionista\nstyleinfluencer\nhttps://www.instagram.com/beautyblogger/'
+                : '@tiktokcreator\ndancequeen\nhttps://www.tiktok.com/@foodie?lang=en'
               }
               rows={8}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent font-mono text-sm"
               disabled={isProcessing}
             />
             <p className="text-xs text-slate-500 mt-2">
-              Cost: ~$0.01 per profile. With or without @ prefix is fine.
+              Cost: ~${pricePerProfile.toFixed(4)} per {platform === 'instagram' ? 'Instagram' : 'TikTok'} profile
+              {parsed.valid.length > 0 && (
+                <> · {parsed.valid.length} handle{parsed.valid.length === 1 ? '' : 's'} ≈ ${(parsed.valid.length * pricePerProfile).toFixed(3)}</>
+              )}
+              . With or without @, or a profile URL.
             </p>
+            {parsed.invalid.length > 0 && (
+              <ul className="mt-2 text-xs text-amber-700 space-y-0.5">
+                {parsed.invalid.map((entry) => (
+                  <li key={entry.input}>
+                    <span className="font-mono">{entry.input}</span> — {entry.reason} (skipped)
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <button
             onClick={processHandles}
-            disabled={isProcessing || !handlesInput.trim()}
+            disabled={isProcessing || parsed.valid.length === 0}
             className="w-full px-6 py-4 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
           >
             {isProcessing ? 'Processing...' : 'Look Up & Save'}
@@ -268,10 +203,10 @@ const { runId } = profileData;
           </div>
         )}
 
-        {creators.length > 0 && (
+        {result && result.rows.length > 0 && (
           <div className="bg-white rounded-xl shadow-lg p-8">
             <h2 className="text-2xl font-bold text-slate-800 mb-4">
-              Results ({creators.length})
+              Results ({result.rows.length})
             </h2>
 
             <div className="overflow-x-auto">
@@ -279,41 +214,68 @@ const { runId } = profileData;
                 <thead>
                   <tr className="border-b border-slate-200">
                     <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700">Handle</th>
+                    <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700">Status</th>
                     <th className="text-left py-3 px-4 text-sm font-semibold text-slate-700">Name</th>
                     <th className="text-right py-3 px-4 text-sm font-semibold text-slate-700">Followers</th>
-                    <th className="text-right py-3 px-4 text-sm font-semibold text-slate-700">Engagement</th>
+                    {result.platform === 'instagram' && (
+                      <th className="text-right py-3 px-4 text-sm font-semibold text-slate-700">Engagement</th>
+                    )}
+                    <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">Pic</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {creators.map((creator, i) => (
-                    <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="py-3 px-4">
-                        <a
-                          href={creator.profileUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-violet-600 hover:text-violet-800 font-medium"
-                        >
-                          @{creator.handle}
-                        </a>
-                      </td>
-                      <td className="py-3 px-4 text-slate-700">{creator.fullName}</td>
-                      <td className="py-3 px-4 text-right text-slate-700">
-                        {creator.followerCount?.toLocaleString()}
-                      </td>
-                      <td className="py-3 px-4 text-right text-slate-700">
-                        {creator.engagementRate ? `${creator.engagementRate.toFixed(2)}%` : '-'}
-                      </td>
-                    </tr>
-                  ))}
+                  {result.rows.map((row) => {
+                    const label = STATUS_LABEL[row.status];
+                    return (
+                      <tr key={row.handle} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="py-3 px-4">
+                          {row.profileUrl ? (
+                            <a
+                              href={row.profileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-violet-600 hover:text-violet-800 font-medium"
+                            >
+                              @{row.handle}
+                            </a>
+                          ) : (
+                            <span className="text-slate-700 font-medium">@{row.handle}</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${label.className}`}>
+                            {label.text}
+                          </span>
+                          {row.importStatus && row.importStatus !== 'active' && (
+                            <span className="ml-2 text-xs text-slate-500">{row.importStatus}</span>
+                          )}
+                          {row.message && (
+                            <div className="text-xs text-slate-500 mt-1">{row.message}</div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-slate-700">{row.displayName ?? ''}</td>
+                        <td className="py-3 px-4 text-right text-slate-700">
+                          {row.followerCount != null ? row.followerCount.toLocaleString() : '-'}
+                        </td>
+                        {result.platform === 'instagram' && (
+                          <td className="py-3 px-4 text-right text-slate-700">
+                            {row.engagementRate != null ? `${Number(row.engagementRate).toFixed(2)}%` : '-'}
+                          </td>
+                        )}
+                        <td className="py-3 px-4 text-center text-slate-700">{row.hasPic ? '✓' : '-'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
-            {savedCount > 0 && (
+            {result.summary.saved + result.summary.existing > 0 && (
               <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
                 <p className="text-green-900 font-medium">
-                  ✅ {savedCount} creator{savedCount !== 1 ? 's' : ''} saved to database
+                  ✅ {result.summary.saved} new creator{result.summary.saved !== 1 ? 's' : ''} saved
+                  {result.summary.existing > 0 && <>, {result.summary.existing} existing profile{result.summary.existing !== 1 ? 's' : ''} refreshed</>}
+                  . New rows appear in the Enrich page&apos;s &ldquo;Not yet enriched&rdquo; queue for {result.platform === 'instagram' ? 'Instagram' : 'TikTok'}.
                 </p>
               </div>
             )}

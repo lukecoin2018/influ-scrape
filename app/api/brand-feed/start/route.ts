@@ -3,6 +3,8 @@ import { supabase } from '@/lib/supabase';
 import { parseHandleList } from '@/lib/handles';
 import {
   buildBrandFeedQueue,
+  BRAND_FEED_PLATFORMS,
+  type BrandFeedPlatform,
   type BrandFeedScope,
   type BrandFeedOrder,
   type BrandFeedCandidate,
@@ -10,6 +12,66 @@ import {
 
 const SCOPES: BrandFeedScope[] = ['verified_brands', 'classified_brands', 'all_brands'];
 const ORDERS: BrandFeedOrder[] = ['never_scraped', 'stale_first', 'top_creators', 'casting_fit'];
+
+interface BrandLookupRow {
+  id: string;
+  instagram_handle: string | null;
+  tiktok_handle: string | null;
+  feed_scraped_at: string | null;
+  feed_post_count: number | null;
+  tiktok_feed_scraped_at: string | null;
+  tiktok_feed_post_count: number | null;
+  casting_in_range_count: number | null;
+  casting_sample_size: number | null;
+  total_partnerships_detected: number | null;
+}
+
+const LOOKUP_COLUMNS =
+  'id, instagram_handle, tiktok_handle, feed_scraped_at, feed_post_count, ' +
+  'tiktok_feed_scraped_at, tiktok_feed_post_count, ' +
+  'casting_in_range_count, casting_sample_size, total_partnerships_detected';
+
+/**
+ * Explicit handles -> brands rows, keyed by the handle as typed.
+ *
+ * On TikTok the row is matched by tiktok_handle first and instagram_handle
+ * second, the same order the process route resolves it in. The two columns
+ * are identical on every row that has both today, so the second lookup only
+ * matters for a brand seen on Instagram alone that is being tried on TikTok
+ * by hand — which is exactly what the override is for.
+ */
+async function lookupBrands(
+  handles: string[],
+  platform: BrandFeedPlatform
+): Promise<Map<string, BrandLookupRow>> {
+  const byHandle = new Map<string, BrandLookupRow>();
+  const key = (value: string | null) => String(value || '').toLowerCase();
+
+  if (platform === 'tiktok') {
+    const { data } = await supabase
+      .from('brands')
+      .select(LOOKUP_COLUMNS)
+      .in('tiktok_handle', handles)
+      .order('id', { ascending: true });
+    for (const row of (data || []) as unknown as BrandLookupRow[]) {
+      if (!byHandle.has(key(row.tiktok_handle))) byHandle.set(key(row.tiktok_handle), row);
+    }
+  }
+
+  const remaining = handles.filter(h => !byHandle.has(h));
+  if (remaining.length > 0) {
+    const { data } = await supabase
+      .from('brands')
+      .select(LOOKUP_COLUMNS)
+      .in('instagram_handle', remaining)
+      .order('id', { ascending: true });
+    for (const row of (data || []) as unknown as BrandLookupRow[]) {
+      if (!byHandle.has(key(row.instagram_handle))) byHandle.set(key(row.instagram_handle), row);
+    }
+  }
+
+  return byHandle;
+}
 
 /**
  * Builds the brand-feed work queue. Read-only — no rows are created here,
@@ -20,6 +82,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
 
+    const platform: BrandFeedPlatform = BRAND_FEED_PLATFORMS.includes(body.platform)
+      ? body.platform
+      : 'instagram';
     const scope: BrandFeedScope = SCOPES.includes(body.scope) ? body.scope : 'verified_brands';
     const order: BrandFeedOrder = ORDERS.includes(body.order) ? body.order : 'never_scraped';
     const batchSize = Math.max(1, Math.min(Number(body.batchSize) || 25, 2000));
@@ -43,22 +108,16 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      const { data: brands } = await supabase
-        .from('brands')
-        .select('id, instagram_handle, feed_scraped_at, feed_post_count, casting_in_range_count, casting_sample_size, total_partnerships_detected')
-        .in('instagram_handle', handles);
-
-      const byHandle = new Map(
-        (brands || []).map(b => [String(b.instagram_handle || '').toLowerCase(), b])
-      );
+      const byHandle = await lookupBrands(handles, platform);
+      const tiktok = platform === 'tiktok';
 
       const items: BrandFeedCandidate[] = handles.map(handle => {
         const brand = byHandle.get(handle);
         return {
           handle,
           brandId: brand?.id ?? null,
-          feedScrapedAt: brand?.feed_scraped_at ?? null,
-          feedPostCount: brand?.feed_post_count ?? null,
+          feedScrapedAt: (tiktok ? brand?.tiktok_feed_scraped_at : brand?.feed_scraped_at) ?? null,
+          feedPostCount: (tiktok ? brand?.tiktok_feed_post_count : brand?.feed_post_count) ?? null,
           castingInRange: brand?.casting_in_range_count ?? null,
           castingSampleSize: brand?.casting_sample_size ?? null,
           creatorsCount: null,
@@ -69,6 +128,7 @@ export async function POST(request: NextRequest) {
       });
 
       return NextResponse.json({
+        platform,
         scope: 'specific',
         order: 'specific',
         items,
@@ -88,10 +148,11 @@ export async function POST(request: NextRequest) {
       : undefined;
 
     const queue = await buildBrandFeedQueue(
-      scope, order, batchSize, minLastPostCount, castingSampleFloor
+      scope, order, batchSize, minLastPostCount, castingSampleFloor, platform
     );
 
     return NextResponse.json({
+      platform,
       scope,
       order,
       items: queue.items,

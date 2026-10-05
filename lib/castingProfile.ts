@@ -15,7 +15,18 @@ import {
  * what keeps the profile stable: it is a pure function of the edges, so it
  * cannot drift as creators grow, and it answers "who did this brand cast"
  * rather than "what do this brand's past partners look like today".
+ *
+ * INSTAGRAM EDGES ONLY, for now. partnerships.platform exists since
+ * 2026-09-22 and the brand-feed pipeline writes TikTok edges, whose follower
+ * snapshot is a TikTok count. classifyCastingEdges has no platform axis — it
+ * keys by creator_id with most-recent-wins and bands every snapshot against
+ * one range — so mixing platforms would band a TikTok count as if it were an
+ * Instagram one and let whichever platform's edge is newest represent a
+ * creator. Both readers below filter platform = 'instagram', so TikTok edges
+ * are stored but move no stat. Per-platform casting columns are a follow-on,
+ * decided after the first TikTok cohort is measured.
  */
+export const CASTING_PLATFORM = 'instagram';
 
 /**
  * A brand's casting behaviour changes over time, so counts are windowed.
@@ -170,7 +181,8 @@ export async function recomputeCastingProfile(
   const { data, error } = await supabase
     .from('partnerships')
     .select('creator_id, creator_follower_count, posted_at, detected_at')
-    .eq('brand_id', brandId);
+    .eq('brand_id', brandId)
+    .eq('platform', CASTING_PLATFORM);
 
   if (error) throw new Error(`Failed to load partnerships for ${brandId}: ${error.message}`);
 
@@ -205,6 +217,7 @@ export async function recomputeAllCastingProfiles(
     supabase
       .from('partnerships')
       .select('brand_id, creator_id, creator_follower_count, posted_at, detected_at')
+      .eq('platform', CASTING_PLATFORM)
       .order('id', { ascending: true })
   );
 

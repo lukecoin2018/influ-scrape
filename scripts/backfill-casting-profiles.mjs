@@ -7,6 +7,10 @@
  * This is the full rebuild: run it after applying the casting migrations, and
  * whenever the band or window changes.
  *
+ * Reads Instagram edges only (partnerships.platform = 'instagram'); TikTok
+ * edges carry TikTok follower counts and are excluded, as in
+ * lib/castingProfile.ts.
+ *
  * Counts distinct creators, not edges, and uses each creator's most recent
  * in-window snapshot. Writes only casting_* columns — never
  * total_partnerships_detected, avg/min/max_partner_follower_count,
@@ -52,7 +56,9 @@ const page = async (path, size = 5000) => {
 
 console.log(`window ${WINDOW_DAYS}d · band ${MIN.toLocaleString()}–${MAX.toLocaleString()} · sample floor ${SAMPLE_FLOOR}\n`);
 
-const edges = await page('partnerships?select=brand_id,creator_id,creator_follower_count,posted_at,detected_at,follower_count_source&order=id.asc');
+// Instagram edges only, matching lib/castingProfile.ts: a TikTok snapshot is a
+// TikTok follower count and must not be banded against the Instagram range.
+const edges = await page('partnerships?select=brand_id,creator_id,creator_follower_count,posted_at,detected_at,follower_count_source&platform=eq.instagram&order=id.asc');
 const brands = await page('brands?select=id,instagram_handle&order=id.asc');
 const nameById = new Map(brands.map(b => [b.id, b.instagram_handle]));
 
