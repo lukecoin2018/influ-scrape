@@ -1,9 +1,18 @@
 -- ============================================================================
 -- A social profile never moves from one creator to another
 --
--- STATUS: NOT YET APPLIED. Apply by hand in the Supabase SQL editor, one
--- statement at a time, then run 2026-10-05-profile-creator-reassign-guard
--- .verify.sql and update this line with the date.
+-- STATUS: APPLIED 2026-10-05, by hand in the Supabase SQL editor, one
+-- statement at a time. The two `drop trigger if exists` statements were
+-- skipped because no trigger existed yet. Verified the same day with
+-- 2026-10-05-profile-creator-reassign-guard.verify.sql:
+--   - function_count 1, enabled_triggers 2.
+--   - social_profiles_creator_id_fkey (social_profiles -> creators):
+--     ON UPDATE NO ACTION, ON DELETE CASCADE. No foreign key on
+--     social_profiles_archive.
+--   - A test UPDATE to gen_random_uuid() inside begin/rollback was refused:
+--     "refusing to move profile tiktok:hugomacwood in social_profiles from
+--     creator 2d35f3c4-4471-429e-8c31-bab2c72686bf to creator
+--     45229855-160b-4461-867b-5b6203952039".
 --
 -- WHAT
 --
@@ -57,12 +66,13 @@
 -- A foreign key's ON UPDATE / ON DELETE action runs as an UPDATE on the
 -- referencing row and fires this trigger:
 --
---   - social_profiles.creator_id references creators(id). Its actions are not
---     in any repo; the .verify.sql reads them. ON DELETE SET NULL sets
---     NEW.creator_id to NULL and passes. ON DELETE CASCADE deletes the row,
---     which is not an UPDATE. ON UPDATE CASCADE would only act if a creators
---     id changed, which nothing does — and if it ever did, this trigger would
---     refuse it, which is the right default.
+--   - social_profiles.creator_id references creators(id) through
+--     social_profiles_creator_id_fkey: ON UPDATE NO ACTION, ON DELETE CASCADE
+--     (read 2026-10-05 with the .verify.sql; not defined in any repo). Neither
+--     runs an UPDATE on social_profiles: deleting a creator deletes its
+--     profiles, and a creators id is never rewritten. Had it been ON DELETE
+--     SET NULL, that would set NEW.creator_id to NULL, which passes; an
+--     ON UPDATE CASCADE would be refused by this trigger, the right default.
 --   - social_profiles_archive.creator_id has no foreign key, by design
 --     (20260827000001_creator_archive_separation.sql:68-73: LIKE ... INCLUDING
 --     ALL does not copy foreign keys), so no referential action reaches it.
