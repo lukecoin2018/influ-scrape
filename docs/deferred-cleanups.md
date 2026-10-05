@@ -1158,3 +1158,64 @@ panel already shows coverage per row and ambers it below that floor.
 
 **Trigger:** before reading results from any seed above ~500 following, and
 before a batch that includes them.
+
+---
+
+## 34. Three gaps in the seed-attempt recording, found reviewing PR #14
+
+Found on 2026-10-05 while reviewing the branch before merge. None blocks it:
+the empty-traversal case the branch exists for is handled correctly. These are
+the edges around it.
+
+### A short result is never visible
+
+**Where:** `recordSeedAttempt` in `lib/discoveryRun.ts:307-315`, the queue
+filter at `app/api/discover/seed-candidates/route.ts:89`, and
+`components/DiscoveryFunnel.tsx`.
+
+`judgeSeedTraversal` reports 40 of 200 as `short`, and the route comment says
+a shortfall "is never allowed to pass as a thin result". But any traversal
+that returned more than zero sets `seed_expanded_at`, and the queue filters on
+`seed_expanded_at IS NULL`, so a short seed leaves the queue at once and its
+"Previous attempt" line in `SetupPanel` never renders. The run summary table
+does not read the `seedTraversal` field the route now returns either. The
+shortfall is stored in `seed_last_attempt_note` and nowhere on screen.
+
+Three comments claim the opposite and should be corrected with the fix:
+`app/api/discover/process/route.ts:175` ("visible in the funnel"),
+`app/api/discover/seed-candidates/route.ts:121` and
+`components/SetupPanel.tsx:53`. As written, the "Previous attempt" line only
+ever shows for a seed whose `seed_following_retrievable` was cleared back to
+NULL after an empty traversal, i.e. a requested retry.
+
+**The fix:** render `seedTraversal.verdict === 'short'` and its note in the
+funnel row, the same way `extractionFailed` is rendered.
+
+### A failed following-count read drops a seed silently
+
+**Where:** `loadSeedFollowingCount` in `lib/discoveryRun.ts:241-254`,
+`judgeSeedTraversal` in `lib/seedTraversal.ts:63-70`.
+
+`loadSeedFollowingCount` returns null for three different things: no profile
+row, a row whose `following_count` is null, and a database error. All three
+reach `judgeSeedTraversal` as `unknown`, which correctly does not fail the run.
+But `recordSeedAttempt` decides on `returned > 0` alone, so an empty traversal
+with an unknown count still writes `seed_following_retrievable = false`. When
+the row exists, the seed leaves the queue while the run reports as healthy,
+and the stored note says "no stored profile", which is false for a read error.
+
+**The fix:** when the verdict is `unknown`, record the attempt but leave
+`seed_following_retrievable` NULL. Separately, have `loadSeedFollowingCount`
+tell a read error apart from a missing row, so the note says which happened.
+
+### The "follows nobody" message is missing the handle
+
+**Where:** `lib/seedTraversal.ts:87`.
+
+The note reads "@ follows nobody, so an empty traversal is correct."
+`judgeSeedTraversal` is never given the handle. Only a hand-typed seed can
+reach this, since the queue requires `following_count >= 150`. Pass the handle
+in, or drop the "@".
+
+**Trigger:** the next change to seed expansion, and before the next batch of
+seeds that is large enough for a short traversal to matter.
