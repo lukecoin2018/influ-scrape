@@ -62,6 +62,7 @@ Every instance so far, with what each was really measuring:
 | The tallies are right | Totals, which matched, over unordered pagination that skipped and duplicated rows | Per-value counts off by two, `Nyc` 114 against 116 |
 | `searchResultPrice` is correct | That the helper is correct — nothing asserted it is CALLED | Keyword runs quoted 15x high for weeks |
 | Seed expansion is cheaper | A comparison against a price the estimate was computing wrongly | The test went RED when the pricing bug was fixed |
+| A seed traversal returned results | That items-came-back-without-handles had not happened — a condition that cannot fire on zero items | `@ramecabrera` returned 0 of 383, reported healthy, seed burned |
 
 The last two are the same event and the most instructive pair, because the
 second was a **unit test that had to be inverted**. `lib/seedExpansion.test.ts`
@@ -78,6 +79,54 @@ comparison propagated out of the pricing module and into
 the cheapest candidate source in the pipeline — a sentence a spend decision
 would have been made from. A mispriced constant does not stay in the file that
 holds it.
+
+### The sharpest instance: a guard ported to a source where "empty" means something else
+
+Written the same day as the rule above, which is why it is worth spelling out.
+The general form is a check that measures the wrong thing. **The specific
+mechanism here is a guard carried across from one data source to another
+without re-asking what its terms mean in the new place.**
+
+`/api/discover/process` reports an extraction failure when
+
+```
+posts.length > 0 && candidates.length === 0
+```
+
+For a SEARCH this is exactly right, and the reasoning is written beside it: a
+term nobody posted under legitimately returns nothing, so zero items is a
+result. Only items-that-yield-no-handles indicates the actor's shape changed.
+
+Seed expansion reused that guard unchanged, and the reuse was defended — the
+whole design was "one changed step, the rest of the funnel applies unchanged",
+which was true of extraction, the free follower filter, the entity filter, the
+reject cache and the import. It was **not** true of this guard, and nothing in
+the shape of the code showed the difference.
+
+**For a seed, zero is never legitimate when the seed follows anybody.** The
+application already held that number — `following_count` 383, on the row the
+queue had selected the seed from. The comparison proves itself and simply was
+not being made. So the guard could not fire, the run passed as healthy with
+zero candidates, and `seed_expanded_at` was written by a second defect that the
+first one hid.
+
+Two things generalise:
+
+- **A predicate's meaning travels with its SOURCE, not with its code.**
+  `posts.length > 0` reads as a null-safety check and is actually a domain
+  claim: *empty is a valid answer here*. Ask of every reused guard what its
+  terms mean in the new place, not whether the expression still compiles.
+- **When you already hold the expected value, compare against it.** The
+  strongest checks are the ones the system can prove on its own data. Zero
+  returned against a stored 383 needs no threshold, no heuristic and no
+  judgement call — which is why `lib/seedTraversal.ts` is a pure module with
+  the count passed in.
+
+The same run also showed the ACTOR reporting `SUCCEEDED`, exit 0, after
+sixteen failed retries and a terminal `ERROR` in its own log. An upstream
+success flag is not evidence either; the dataset was empty and the item count
+is what said so.
+
 
 ### What actually catches this class
 
@@ -100,6 +149,11 @@ Not more checks. Checks of a different kind:
 - **When a number appears in prose, trace it back to what computed it.** Both
   documented claims that turned out wrong were numbers copied from a passing
   computation into a sentence.
+- **Re-derive a reused guard's premises at each new call site.** Not "does it
+  still typecheck" but "is empty still a valid answer here, is zero still
+  meaningful, is this still the failure mode".
+- **Do not trust an upstream success flag over the artefact.** The actor exited
+  0 with an empty dataset after logging a terminal error. Count the items.
 
 
 ## A passing build is not evidence the dev server works

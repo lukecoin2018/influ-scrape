@@ -213,6 +213,11 @@ export default function Home() {
     runner.reset();
     setActiveTab('progress');
 
+    // Hoisted out of the try. /api/discover/start inserts the run row before
+    // anything below can go wrong, so a throw leaves an open row that only this
+    // scope knows the id of.
+    let openRunId: string | null = null;
+
     try {
       const res = await fetch('/api/discover/start', {
         method: 'POST',
@@ -233,6 +238,7 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       setRunId(data.runId);
+      openRunId = data.runId;
       await runner.start(
         data.items.map((item: { hashtag: string }) => ({
           hashtag: item.hashtag,
@@ -249,6 +255,19 @@ export default function Home() {
       await finishRun(data.runId);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to start discovery');
+      // Close the row on the way out too. Run 34e0d70b sat at status 'running'
+      // with completed_at null because this path threw after /start had already
+      // inserted the row — and an abandoned-looking run is indistinguishable
+      // from one still going. openRunId is hoisted above the try because `data`
+      // is out of scope here, and is unset anyway when /start itself failed —
+      // in which case there is no row to close.
+      if (openRunId) {
+        try {
+          await finishRun(openRunId);
+        } catch {
+          // Already logged inside finishRun; never mask the original error.
+        }
+      }
     } finally {
       setIsStarting(false);
     }

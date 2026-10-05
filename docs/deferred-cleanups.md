@@ -1021,3 +1021,201 @@ TikTok run — whichever is decided first.
 reason, or the first enrich run that hangs on the actor. Related: item 7, which
 wants the pure mappers out of `lib/apify.ts` — when that split happens the
 helper and the mappers should land on opposite sides of it.
+
+---
+
+## 30. `discovery_runs.status` has no value for "ran and failed"
+
+**Where:** `app/api/discover/finish/route.ts:32` —
+`body.status === 'cancelled' ? 'cancelled' : 'complete'`.
+
+Two values, and a run can end three ways: it finished, a person stopped it, or
+it ran and failed. Run `34e0d70b` is the third — its one seed term returned an
+empty traversal, the term reported an extraction failure, and there is no
+status that says so. It was closed as `cancelled`, which is the least wrong of
+the two available and still implies a person pressed Stop.
+
+Not urgent: `discovery_candidates` carries the per-term outcome, so the
+information exists at the row level. But a query for "which runs failed" cannot
+be written against `discovery_runs` alone.
+
+**Trigger:** next time the finish route is touched. Add `'failed'` to the
+taxonomy with a CHECK, and have the client send it when every term in a run
+reported `extractionFailed`.
+
+---
+
+## 31. One pre-existing run is stuck at `status = 'running'`
+
+**Where:** `discovery_runs` id `1ef7db67-9f02-4eac-bb15-bfc73d382bc4`,
+search_source `hashtag`, started 2026-09-03.
+
+Found while closing run `34e0d70b`. It predates the seed work and was left
+alone deliberately — closing someone else's abandoned run is a judgement about
+what happened to it that nothing here has the evidence to make.
+
+`last_progress_at` is what distinguishes an abandoned run from a live one, and
+that column already exists for exactly this. Nothing reads it yet.
+
+**Trigger:** whoever adds the abandoned-run sweep. The rule is
+`status = 'running' AND last_progress_at < now() - interval '1 hour'`, and it
+should mark rather than delete.
+
+---
+
+## 32. The seed queue orders by a quantity that is capped
+
+**Where:** `app/api/discover/seed-candidates/route.ts` —
+`.order('following_count', { ascending: false })`.
+
+The comment defending it says descending following count "puts the seeds with
+the most to give first". That is wrong, and the error is arithmetic rather than
+stylistic.
+
+**A traversal returns `min(following_count, depth)`.** At depth 200 a seed
+following 9,937 and a seed following 200 both return 200. Every seed at or
+above the depth is *exactly equivalent* in what it delivers, so ordering them
+by following count ranks on a difference that does not exist — while pushing
+the seeds BELOW the depth, the only ones where the number still varies, to the
+bottom.
+
+It bit immediately. The Spanish queue reached 166 eligible; the panel fetched
+100; the cut fell at `following_count` 383, and both seeds chosen for the
+second run — `monicaacelada` (363) and `segundosolar` (314) — were on the wrong
+side of it at ranks 107 and 116. The two seeds picked *because* their coverage
+was good were the two the ordering hid.
+
+Coverage is the figure that matters and it moves the opposite way:
+
+    follows 9,937, depth 200  ->  2% of the list seen
+    follows   383, depth 200  -> 52%
+    follows   314, depth 200  -> 64%
+
+**Interim fix applied:** the panel now requests the route's maximum of 200 and
+displays coverage per row, amber below 39% — the floor of the range the
+original four seeds were measured over. That unblocks a 166-row queue and makes
+the flaw visible, but it does not fix the order, and it fails again above 200
+eligible seeds. English is at 612 today.
+
+**The real fix:** rank by deliverable — `LEAST(following_count, depth)`
+descending, then a quality signal for the resulting ties. PostgREST cannot
+order by a computed expression, so this wants either a view, an RPC, or the
+depth passed in and the ordering done over a bounded candidate set. Whoever
+takes it should also decide whether "most to give" is even the right goal, or
+whether coverage should lead.
+
+**Trigger:** before any batch of more than a handful of seeds, and certainly
+before running English, where the queue is already past the 200 ceiling.
+
+---
+
+## 33. The actor's pagination order is undocumented, and it is not random
+
+**Where:** `lib/apify.ts` `startTikTokFollowingScraper`, and any seed whose
+`following_count` exceeds the depth requested.
+
+**The actor documents no ordering.** Checked the authoritative sources, not a
+store page: `actorDefinition.readme` is empty (0 chars), no input schema is
+published, and the actor description says only "Input a profile name, and get
+detailed lists of followers and following profiles with complete metadata".
+Nothing about order, recency, or what a truncated request returns.
+
+This did not matter for the original measurements and now does. The four seeds
+of 2026-09-04 followed 16, 102, 207 and 514, so at depth 200 coverage ran
+39-100% and ordering could bias almost nothing. The queue today offers seeds
+following 9,000+, where 200 entries is a **2% sample**.
+
+### The order correlates with account size — free evidence, from data already held
+
+`colgo` follows 207 and returned ~200, so its dataset is a near-complete list
+and the only thing left to read off it is the ORDER. Median follower count by
+quartile of return order:
+
+    q1  n=50   median fans   143,100
+    q2  n=50   median fans   242,600
+    q3  n=50   median fans   404,400
+    q4  n=50   median fans    42,800
+
+Not monotonic, but not flat either: the last quartile is roughly a tenth of the
+third. **Whatever the order is, it is not random**, so truncating at 200 of
+9,937 samples a systematically particular slice — and the in-band rate, which
+is a follower-count band, is exactly the statistic that slice would distort.
+
+Suggestive rather than conclusive: one seed, medians over n=50.
+
+### The test, when a large seed is worth running
+
+One seed following several thousand, run at depth 200 and again at 500:
+
+1. Do the first 200 of the deeper run match the shallow run, in order? That
+   settles whether pagination is stable and prefix-consistent at all.
+2. Do entries 200-500 resemble 0-200 on follower band, bio language and
+   account type? That settles whether a truncated sample is representative.
+
+Roughly $0.70 and it answers both. Until it is run, **treat any seed whose
+coverage is below the measured 39% floor as a sample of unknown bias** — the
+panel already shows coverage per row and ambers it below that floor.
+
+**Trigger:** before reading results from any seed above ~500 following, and
+before a batch that includes them.
+
+---
+
+## 34. Three gaps in the seed-attempt recording, found reviewing PR #14
+
+Found on 2026-10-05 while reviewing the branch before merge. None blocks it:
+the empty-traversal case the branch exists for is handled correctly. These are
+the edges around it.
+
+### A short result is never visible
+
+**Where:** `recordSeedAttempt` in `lib/discoveryRun.ts:307-315`, the queue
+filter at `app/api/discover/seed-candidates/route.ts:89`, and
+`components/DiscoveryFunnel.tsx`.
+
+`judgeSeedTraversal` reports 40 of 200 as `short`, and the route comment says
+a shortfall "is never allowed to pass as a thin result". But any traversal
+that returned more than zero sets `seed_expanded_at`, and the queue filters on
+`seed_expanded_at IS NULL`, so a short seed leaves the queue at once and its
+"Previous attempt" line in `SetupPanel` never renders. The run summary table
+does not read the `seedTraversal` field the route now returns either. The
+shortfall is stored in `seed_last_attempt_note` and nowhere on screen.
+
+Three comments claim the opposite and should be corrected with the fix:
+`app/api/discover/process/route.ts:175` ("visible in the funnel"),
+`app/api/discover/seed-candidates/route.ts:121` and
+`components/SetupPanel.tsx:53`. As written, the "Previous attempt" line only
+ever shows for a seed whose `seed_following_retrievable` was cleared back to
+NULL after an empty traversal, i.e. a requested retry.
+
+**The fix:** render `seedTraversal.verdict === 'short'` and its note in the
+funnel row, the same way `extractionFailed` is rendered.
+
+### A failed following-count read drops a seed silently
+
+**Where:** `loadSeedFollowingCount` in `lib/discoveryRun.ts:241-254`,
+`judgeSeedTraversal` in `lib/seedTraversal.ts:63-70`.
+
+`loadSeedFollowingCount` returns null for three different things: no profile
+row, a row whose `following_count` is null, and a database error. All three
+reach `judgeSeedTraversal` as `unknown`, which correctly does not fail the run.
+But `recordSeedAttempt` decides on `returned > 0` alone, so an empty traversal
+with an unknown count still writes `seed_following_retrievable = false`. When
+the row exists, the seed leaves the queue while the run reports as healthy,
+and the stored note says "no stored profile", which is false for a read error.
+
+**The fix:** when the verdict is `unknown`, record the attempt but leave
+`seed_following_retrievable` NULL. Separately, have `loadSeedFollowingCount`
+tell a read error apart from a missing row, so the note says which happened.
+
+### The "follows nobody" message is missing the handle
+
+**Where:** `lib/seedTraversal.ts:87`.
+
+The note reads "@ follows nobody, so an empty traversal is correct."
+`judgeSeedTraversal` is never given the handle. Only a hand-typed seed can
+reach this, since the queue requires `following_count >= 150`. Pass the handle
+in, or drop the "@".
+
+**Trigger:** the next change to seed expansion, and before the next batch of
+seeds that is large enough for a short traversal to matter.
