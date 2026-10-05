@@ -1,9 +1,15 @@
 -- ============================================================================
 -- Delete 18 orphaned creators: 11 in creators, 7 in creators_archive
 --
--- STATUS: NOT YET APPLIED. OPTIONAL. Apply by hand in the Supabase SQL
--- editor, one statement at a time, in the order below, checking each
--- result against what it says to expect. Then update this line with the date.
+-- STATUS: APPLIED 2026-10-05, by hand in the Supabase SQL editor, one
+-- statement at a time in the order below. Re-running 3a and 3b afterwards
+-- returned no rows. Measured the same evening (service-role reads):
+--   - none of the 18 ids remains in creators, creators_archive or
+--     creator_entity; all 18 are still in creator_registry.
+--   - creators 8,727 -> 8,716 and creators_archive 3,180 -> 3,173;
+--     creator_entity 8,727 -> 8,716 (the CASCADE); social_profiles (8,716),
+--     social_profiles_archive (3,173) and creator_registry (12,039) unchanged.
+--   - 0 creators and 0 archived creators without a profile.
 --
 -- Written to docs/verification-rules.md, "Deletions in migrations": every
 -- DELETE is scoped to a literal id list and preceded by a SELECT with the
