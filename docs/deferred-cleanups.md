@@ -1374,3 +1374,44 @@ labelled posts it was written for, it catches 290. The rest:
 and line-start and `//` are the two worth taking.
 
 **Trigger:** the next change to the German rule.
+
+---
+
+## 41. Languages without a stopword list are forced onto the nearest listed one
+
+**Where:** `LANGUAGE_SIGNALS` and `detectLanguage` in `lib/bioSignals.ts`.
+
+The heuristic knows nine languages: en, de, es, fr, it, pt, nl, tr, ar. It
+has no way to say "something else". A text in any other language still
+collects stray hits — an English hashtag word, a "die" or "das", a Spanish
+"que" — and the highest of those wins. The label is then confidently wrong
+rather than absent.
+
+**Measured 2026-10-11** against TikTok's per-post language, which names the
+language directly:
+
+    post language outside the table      56 profiles
+      carrying a heuristic label         22   all 22 wrong: en 21, es 1
+                                              (th 5, vi 3, id 3, tl 2, ru 2,
+                                               cy, ro, pl, ta, sv, ja, ht)
+      no label                           34
+    post language inside the table     1,315 labelled, 1,285 agreeing
+
+Instagram has no post language, so its cases surface only by eye. The
+Portuguese backfill of the same day turned up three: two Polish and Hungarian
+bios landing on de (@moyamatchapl, @_.getrex._; cleared by
+`docs/migrations/2026-10-11-clear-misassigned-de-labels.sql` once applied) and
+a Hungarian one landing on nl (@kirschnerreginaa, not in that migration).
+
+**Not sticky:** clearing a label does not stop the next Intelligence pass
+writing it again. @_.getrex._ is already in the "Needs re-analysis" queue.
+
+**Why deferred:** every fix is a design choice rather than a patch — more
+stopword lists (which languages, and each one a new source of collisions), a
+minimum share of stopword-bearing words before any label is given, a
+dedicated language-identification library, or preferring TikTok's
+post_language over the heuristic wherever it exists. The last is the cheapest
+and is right for TikTok only.
+
+**Trigger:** before `detected_language` is used to define a market for a
+language outside the nine, or the next change to the heuristic.
