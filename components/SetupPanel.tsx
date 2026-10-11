@@ -63,6 +63,23 @@ const SEED_LANGUAGES = [
   { code: 'es', label: 'Spanish' },
   { code: 'en', label: 'English' },
   { code: 'pt', label: 'Portuguese' },
+  { code: 'de', label: 'German' },
+] as const;
+
+/**
+ * TikTok keyword search region. '' sends nothing, which is the actor's own
+ * default of US — the behaviour of every keyword run before this select.
+ *
+ * The actor documents the field as COSMETIC: it is passed to TikTok as
+ * `region`, but TikTok picks results by the request's exit IP. Offered so the
+ * US-vs-DE comparison can be run and recorded, not as a known lever. Instagram
+ * keyword search has no region input at all.
+ */
+const KEYWORD_REGIONS = [
+  { code: '', label: 'US (default)' },
+  { code: 'DE', label: 'Germany' },
+  { code: 'AT', label: 'Austria' },
+  { code: 'CH', label: 'Switzerland' },
 ] as const;
 
 interface SetupPanelProps {
@@ -76,6 +93,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
   const [mode, setMode] = useState<DiscoveryMode>('niche');
   const [searchSource, setSearchSource] = useState<SearchSource>('hashtag');
   const [haltOnLowCoverage, setHaltOnLowCoverage] = useState(true);
+  const [keywordRegion, setKeywordRegion] = useState<string>('');
   const [hashtags, setHashtags] = useState('fashionblogger, sustainablefashion, ootd, streetstyle, fashionista, styleinspo');
   const [nicheKeywords, setNicheKeywords] = useState('');
   const [minFollowers, setMinFollowers] = useState(DEFAULT_MIN_FOLLOWERS);
@@ -83,7 +101,7 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
   const [resultsPerHashtag, setResultsPerHashtag] = useState(200);
 
   // ── Seed queue ──────────────────────────────────────────────────────────
-  const [seedLanguage, setSeedLanguage] = useState<'any' | 'es' | 'en' | 'pt'>('es');
+  const [seedLanguage, setSeedLanguage] = useState<'any' | 'es' | 'en' | 'pt' | 'de'>('es');
   const [seedCandidates, setSeedCandidates] = useState<SeedCandidate[]>([]);
   const [seedTotal, setSeedTotal] = useState<number | null>(null);
   const [seedLoading, setSeedLoading] = useState(false);
@@ -171,6 +189,10 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
       // down a path it has not been verified on.
       searchSource: effectiveSource,
       haltOnLowCoverage,
+      // Only where the select is shown, so a region picked for a TikTok
+      // keyword run cannot leak into a later hashtag or Instagram run.
+      ...(effectiveSource === 'keyword' && platform === 'tiktok' && keywordRegion
+        ? { keywordRegion } : {}),
       nicheKeywords: keywordsArray
     });
   };
@@ -281,6 +303,26 @@ export default function SetupPanel({ onStartDiscovery, isRunning, platform = 'in
               keywords than for hashtags, so a term that finds posts but no creators is reported
               as an error rather than as an empty result.
             </p>
+          )}
+          {effectiveSource === 'keyword' && platform === 'tiktok' && (
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-slate-700 mb-2">Search region</label>
+              <select
+                value={keywordRegion}
+                onChange={e => setKeywordRegion(e.target.value)}
+                disabled={isRunning}
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-500"
+              >
+                {KEYWORD_REGIONS.map(r => (
+                  <option key={r.code || 'default'} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500 mt-2">
+                Sent to TikTok as its region field. The actor documents it as cosmetic — TikTok
+                ranks by the request&apos;s IP — so treat a difference as something to measure,
+                not to rely on. Not recorded on the run; note it in docs/dach-probe.md.
+              </p>
+            </div>
           )}
         </div>
       )}

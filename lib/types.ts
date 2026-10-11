@@ -26,6 +26,12 @@ export interface DiscoveryConfig {
    * coverage figure is worth more than the spend a halt would save.
    */
   haltOnLowCoverage: boolean;
+  /**
+   * ISO 3166-1 alpha-2 region for TikTok keyword search. Absent means the
+   * actor's default, US. Documented by the actor as cosmetic — see
+   * KEYWORD_REGIONS in components/SetupPanel.tsx.
+   */
+  keywordRegion?: string;
   minFollowers: number;
   maxFollowers: number;
   resultsPerHashtag: number;

@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
     const langP = parseEnumParam(
       'language',
       params.get('language'),
-      ['es', 'en', 'pt', 'any'] as const,
+      ['es', 'en', 'pt', 'de', 'any'] as const,
       'any',
     );
     const limitP = parseBoundedInt('limit', params.get('limit'), { min: 1, max: 200, fallback: 50 });
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
     const paramError = firstError(langP, limitP, minFollowingP);
     if (paramError) return NextResponse.json({ error: paramError }, { status: 400 });
 
-    const language = (langP as { value: 'es' | 'en' | 'pt' | 'any' }).value;
+    const language = (langP as { value: 'es' | 'en' | 'pt' | 'de' | 'any' }).value;
     const limit = (limitP as { value: number }).value;
     const minFollowing = (minFollowingP as { value: number }).value;
 

@@ -18,6 +18,26 @@ interface LocationResult {
   confidence: number;
 }
 
+/**
+ * Rows whose country is still open: none stored, or only the email-TLD
+ * fallback the Intelligence step writes when nothing else set one
+ * (intelligence_data.country_source = 'email_tld'). The fallback must not take
+ * a row out of this queue, or a creator with a German agency address would
+ * never get the summary-based answer it is only standing in for.
+ */
+const OPEN_COUNTRY_FILTER = 'detected_country.is.null,intelligence_data->>country_source.eq.email_tld';
+
+function clearsFallback(intelligenceData: unknown): boolean {
+  return !!intelligenceData && typeof intelligenceData === 'object'
+    && (intelligenceData as Record<string, unknown>).country_source === 'email_tld';
+}
+
+function withoutFallbackMarker(intelligenceData: unknown): Record<string, unknown> {
+  const rest = { ...(intelligenceData as Record<string, unknown>) };
+  delete rest.country_source;
+  return rest;
+}
+
 async function extractLocationFromSummary(summary: string): Promise<LocationResult> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -80,9 +100,9 @@ export async function GET(request: Request) {
     // Fetch a larger pool then shuffle in JS (Supabase JS client has no ORDER BY RANDOM())
     const { data, error: err } = await supabase
       .from('social_profiles')
-      .select('id, handle, platform, ai_summary, creator_id')
+      .select('id, handle, platform, ai_summary, creator_id, intelligence_data')
       .eq('import_status', 'active')
-      .is('detected_country', null)
+      .or(OPEN_COUNTRY_FILTER)
       .not('ai_summary', 'is', null)
       .limit(500);
     error = err;
@@ -96,9 +116,9 @@ export async function GET(request: Request) {
   } else {
     const { data, error: err } = await supabase
       .from('social_profiles')
-      .select('id, handle, platform, ai_summary, creator_id')
+      .select('id, handle, platform, ai_summary, creator_id, intelligence_data')
       .eq('import_status', 'active')
-      .is('detected_country', null)
+      .or(OPEN_COUNTRY_FILTER)
       .not('ai_summary', 'is', null)
       .range(offset, offset + limit - 1);
     error = err;
@@ -165,6 +185,11 @@ export async function GET(request: Request) {
             .update({
               detected_country: country,
               detected_city: city,
+              // A summary-based answer replaces the email-TLD fallback, so the
+              // marker that kept the row open goes with it.
+              ...(clearsFallback(profile.intelligence_data) ? {
+                intelligence_data: withoutFallbackMarker(profile.intelligence_data),
+              } : {}),
             })
             .eq('id', profile.id);
 

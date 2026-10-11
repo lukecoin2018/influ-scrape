@@ -146,6 +146,75 @@ const WEAK_SPONSORSHIP_PHRASES = [
   'tak til',
 ];
 
+// ── German disclosure labels ──────────────────────────────────────────────────
+// German creators mark paid posts with a bare WORD, not a hashtag: "Anzeige |",
+// "*Werbung", "[anzeige/ad]". Measured 2026-10-11 on the 6,607 stored posts of
+// the 212 DACH-or-German profiles: "anzeige" as a word in 386 posts and
+// "werbung" in 118, against #anzeige in 7 and #werbung in 39. The word only
+// counted when a @mention sat within reach of it (extractMentionCollabPatterns),
+// so 345 labelled posts were not flagged.
+//
+// A label counts only where it is positioned as one — the caption's leading
+// word, right after * | [ ( or followed by a colon — never as a word anywhere,
+// so "Werbung machen" in running text stays unflagged.
+
+const GERMAN_LABEL_PATTERNS: RegExp[] = [
+  // Leading word. Emoji, brackets and punctuation may precede it; # and @ may
+  // not, because "#werbung" is a hashtag signal and "@werbung…" is a handle.
+  /^[^\p{L}\p{N}#@]*(anzeige|werbung)(?!\p{L})/iu,
+  /[*|\[(]\s*(anzeige|werbung)(?!\p{L})/giu,
+  /(?<!\p{L})(anzeige|werbung)\s*:/giu,
+];
+
+// Instagram's German paid-partnership wording. Bounded on the left so the
+// unpaid "unbezahlte Partnerschaft mit" does not contain a match.
+const GERMAN_PAID_PHRASE = /(?<!\p{L})bezahlte\s+partnerschaft\s+mit(?!\p{L})/iu;
+
+// Unpaid labels are NOT sponsorship. German creators label brand mentions
+// nobody paid for out of legal caution — "unbezahlte Werbung", "Werbung durch
+// Markennennung", "keine Werbung, selbst gekauft". 15 such posts in the same
+// sample; 5 were being counted as sponsored.
+//
+// When one is present, the German label words stop counting anywhere in the
+// post — as a label, as a hashtag (#werbung) and as a collab word beside a
+// mention. Other signals (#ad, "in kooperation mit", a tagged brand) still do.
+const GERMAN_UNPAID_PATTERNS: RegExp[] = [
+  /(?<!\p{L})unbezahlt/iu,
+  /(?<!\p{L})unbeauftragt/iu,
+  /marken(?:nennung|erkennung|erwähnung)/iu,
+  /(?<!\p{L})keine\s+(?:bezahlte\s+)?(?:werbung|anzeige|kooperation)(?!\p{L})/iu,
+  /selbst\s*gekauft/iu,
+];
+
+const GERMAN_LABEL_WORDS = ['anzeige', 'werbung'];
+
+export interface GermanDisclosure {
+  /** Label words found in a label position, lowercased and de-duplicated. */
+  labels: string[];
+  /** "bezahlte Partnerschaft mit" is present. */
+  paidPhrase: boolean;
+  /** An unpaid label is present; the label words above must then be ignored. */
+  unpaid: boolean;
+}
+
+export function detectGermanDisclosure(caption: string): GermanDisclosure {
+  const text = caption || '';
+  const labels = new Set<string>();
+  for (const pattern of GERMAN_LABEL_PATTERNS) {
+    if (pattern.global) {
+      for (const m of text.matchAll(pattern)) labels.add(m[1].toLowerCase());
+    } else {
+      const m = pattern.exec(text);
+      if (m) labels.add(m[1].toLowerCase());
+    }
+  }
+  return {
+    labels: [...labels].sort(),
+    paidPhrase: GERMAN_PAID_PHRASE.test(text),
+    unpaid: GERMAN_UNPAID_PATTERNS.some(p => p.test(text)),
+  };
+}
+
 // ── Noise filter ───────────────────────────────────────────────────────────────
 
 export function isLikelyBrand(handle: string): boolean {
@@ -196,8 +265,11 @@ function extractXPatternMentions(caption: string): string[] {
  * Detects "@handle <collaboration word>" pattern.
  * e.g. "@stockmann_eesti koostöö" or "@brand collab" or "@brand samenwerking"
  * HIGH confidence — explicit in-caption brand disclosure.
+ *
+ * `ignoredWords` drops collab words that must not count for this caption —
+ * the German label words when the post carries an unpaid label.
  */
-function extractMentionCollabPatterns(caption: string): string[] {
+function extractMentionCollabPatterns(caption: string, ignoredWords: string[] = []): string[] {
   const collabWords = [
     // English
     'collab', 'collaboration', 'partnership', 'partner', 'sponsored',
@@ -225,7 +297,7 @@ function extractMentionCollabPatterns(caption: string): string[] {
     'samarbejde', 'annonce',
     // Estonian
     'koostöö', 'koostoo', 'reklaam',
-  ];
+  ].filter(word => !ignoredWords.includes(word));
   const results: string[] = [];
   for (const { handle, index, matchLength } of findMentionsInCaption(caption)) {
     const afterHandle = caption.slice(index + matchLength, index + matchLength + 40).toLowerCase();
@@ -299,8 +371,15 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
     return { brandHandles: [], detectionSignals: [], detectionConfidence: 'low', isSponsoredContent: false };
   }
 
+  // An unpaid German label switches the German label words off for the whole
+  // post — hashtag, label and collab word alike. See GERMAN_UNPAID_PATTERNS.
+  const german = detectGermanDisclosure(caption);
+  const ignoredLabelWords = german.unpaid ? GERMAN_LABEL_WORDS : [];
+
   // ── Step 1: Strong hashtag signals ──────────────────────────────────────────
-  const matchedHashtags = hashtagsLower.filter(h => SPONSORSHIP_HASHTAGS.has(h));
+  const matchedHashtags = hashtagsLower.filter(h =>
+    SPONSORSHIP_HASHTAGS.has(h) && !ignoredLabelWords.includes(h)
+  );
   if (matchedHashtags.length > 0) {
     matchedHashtags.forEach(h => detectionSignals.add(`#${h}`));
   }
@@ -312,6 +391,13 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   if (matchedPhrases.length > 0) {
     matchedPhrases.forEach(p => detectionSignals.add(p.trim()));
   }
+
+  // ── Step 2b: German disclosure labels ────────────────────────────────────────
+  // A positioned "Anzeige"/"Werbung" is the German #ad and is scored like one.
+  const germanLabels = german.unpaid ? [] : german.labels;
+  germanLabels.forEach(w => detectionSignals.add(`label:${w}`));
+  const germanPaidPhrase = german.paidPhrase && !german.unpaid;
+  if (germanPaidPhrase) detectionSignals.add('bezahlte partnerschaft mit');
 
   // ── Step 3: Weak phrase signals — only fire if @mention also present ─────────
   // Prevents "gracias a Colombia", "thank you to everyone" etc. from triggering.
@@ -328,7 +414,7 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   // The signal fires either way: a collab word beside a mention is evidence of
   // sponsorship whoever names the brand. Only the handle is withheld when the
   // caption is not the authoritative source for it.
-  const mentionCollabHandles = extractMentionCollabPatterns(caption);
+  const mentionCollabHandles = extractMentionCollabPatterns(caption, ignoredLabelWords);
   if (mentionCollabHandles.length > 0) {
     if (!mentionsAreResolved) {
       mentionCollabHandles.forEach(h => {
@@ -388,11 +474,11 @@ export function detectBrandsInPost(post: HashtagPost): BrandDetection {
   // ── Step 8: Confidence scoring ────────────────────────────────────────────────
   let detectionConfidence: 'high' | 'medium' | 'low' = 'low';
 
-  const hasStrongPhrase = matchedPhrases.length > 0;
+  const hasStrongPhrase = matchedPhrases.length > 0 || germanPaidPhrase;
   const hasCollabPattern = detectionSignals.has('mention_collab_pattern');
   const hasTagged = detectionSignals.has('tagged_in_post');
   const hasMention = detectionSignals.has('mentioned_in_caption');
-  const hasHashtag = matchedHashtags.length > 0;
+  const hasHashtag = matchedHashtags.length > 0 || germanLabels.length > 0;
 
   if (hasCollabPattern) {
     detectionConfidence = 'high';
