@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { fetchAllRows } from '@/lib/supabasePaging';
+import { detectLocation, detectLanguage, mayWriteEmailTldCountry, type DetectedLocation } from '@/lib/bioSignals';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -43,143 +44,6 @@ function extractWebsite(bio: string): string | null {
     return !socialDomains.some((d) => lower.includes(d));
   });
   return websites[0] || null;
-}
-
-// ---------------------------------------------------------------------------
-// Location detection
-// ---------------------------------------------------------------------------
-function detectLocation(bio: string): { country: string | null; city: string | null; raw: string | null } {
-  if (!bio) return { country: null, city: null, raw: null };
-
-  const flagMap: Record<string, string> = {
-    '🇺🇸': 'United States', '🇬🇧': 'United Kingdom', '🇩🇪': 'Germany',
-    '🇫🇷': 'France', '🇪🇸': 'Spain', '🇮🇹': 'Italy',
-    '🇳🇱': 'Netherlands', '🇧🇪': 'Belgium', '🇦🇹': 'Austria',
-    '🇨🇭': 'Switzerland', '🇸🇪': 'Sweden', '🇩🇰': 'Denmark',
-    '🇳🇴': 'Norway', '🇵🇹': 'Portugal', '🇧🇷': 'Brazil',
-    '🇲🇽': 'Mexico', '🇨🇦': 'Canada', '🇦🇺': 'Australia',
-    '🇯🇵': 'Japan', '🇰🇷': 'South Korea', '🇮🇳': 'India',
-    '🇹🇷': 'Turkey', '🇿🇦': 'South Africa', '🇦🇪': 'UAE',
-    '🇸🇦': 'Saudi Arabia', '🇵🇱': 'Poland', '🇷🇴': 'Romania',
-    '🇭🇺': 'Hungary', '🇨🇿': 'Czech Republic', '🇬🇷': 'Greece',
-    '🇮🇪': 'Ireland', '🇫🇮': 'Finland', '🇭🇷': 'Croatia',
-    '🇷🇸': 'Serbia', '🇧🇬': 'Bulgaria', '🇺🇦': 'Ukraine',
-    '🇵🇭': 'Philippines', '🇮🇩': 'Indonesia', '🇹🇭': 'Thailand',
-    '🇻🇳': 'Vietnam', '🇲🇾': 'Malaysia', '🇸🇬': 'Singapore',
-    '🇳🇬': 'Nigeria', '🇰🇪': 'Kenya', '🇪🇬': 'Egypt',
-    '🇨🇴': 'Colombia', '🇦🇷': 'Argentina', '🇨🇱': 'Chile', '🇵🇪': 'Peru',
-  };
-
-  const cityMap: Record<string, string> = {
-    'new york': 'United States', 'nyc': 'United States', 'los angeles': 'United States',
-    'la': 'United States', 'chicago': 'United States', 'miami': 'United States',
-    'san francisco': 'United States', 'sf': 'United States', 'atlanta': 'United States',
-    'houston': 'United States', 'dallas': 'United States', 'seattle': 'United States',
-    'boston': 'United States', 'nashville': 'United States', 'denver': 'United States',
-    'london': 'United Kingdom', 'manchester': 'United Kingdom', 'birmingham': 'United Kingdom',
-    'edinburgh': 'United Kingdom', 'glasgow': 'United Kingdom', 'liverpool': 'United Kingdom',
-    'berlin': 'Germany', 'munich': 'Germany', 'münchen': 'Germany',
-    'hamburg': 'Germany', 'frankfurt': 'Germany', 'cologne': 'Germany', 'köln': 'Germany',
-    'düsseldorf': 'Germany', 'stuttgart': 'Germany',
-    'paris': 'France', 'lyon': 'France', 'marseille': 'France',
-    'madrid': 'Spain', 'barcelona': 'Spain', 'valencia': 'Spain',
-    'rome': 'Italy', 'milan': 'Italy', 'milano': 'Italy',
-    'amsterdam': 'Netherlands', 'rotterdam': 'Netherlands',
-    'brussels': 'Belgium', 'antwerp': 'Belgium',
-    'vienna': 'Austria', 'wien': 'Austria',
-    'zurich': 'Switzerland', 'zürich': 'Switzerland', 'geneva': 'Switzerland',
-    'stockholm': 'Sweden', 'copenhagen': 'Denmark', 'oslo': 'Norway',
-    'lisbon': 'Portugal', 'dublin': 'Ireland', 'helsinki': 'Finland',
-    'prague': 'Czech Republic', 'warsaw': 'Poland', 'budapest': 'Hungary',
-    'athens': 'Greece', 'istanbul': 'Turkey',
-    'toronto': 'Canada', 'vancouver': 'Canada', 'montreal': 'Canada',
-    'sydney': 'Australia', 'melbourne': 'Australia',
-    'tokyo': 'Japan', 'seoul': 'South Korea',
-    'mumbai': 'India', 'delhi': 'India', 'bangalore': 'India',
-    'dubai': 'UAE', 'abu dhabi': 'UAE',
-    'são paulo': 'Brazil', 'rio de janeiro': 'Brazil',
-    'mexico city': 'Mexico', 'buenos aires': 'Argentina',
-    'cape town': 'South Africa', 'johannesburg': 'South Africa',
-    'lagos': 'Nigeria', 'nairobi': 'Kenya', 'cairo': 'Egypt',
-  };
-
-  let country: string | null = null;
-  let city: string | null = null;
-  let raw: string | null = null;
-
-  // Flag emojis
-  for (const [flag, countryName] of Object.entries(flagMap)) {
-    if (bio.includes(flag)) { country = countryName; break; }
-  }
-
-  // 📍 pin pattern
-  const pinMatch = bio.match(/📍\s*([^,\n]+(?:,\s*[^,\n]+)?)/);
-  if (pinMatch) raw = pinMatch[1].trim();
-
-  // "Based in / From / Living in" pattern
-  const basedInMatch = bio.match(/(?:based in|from|living in|located in)\s+([A-Za-zÀ-ÿ\s]+)/i);
-  if (basedInMatch) raw = raw || basedInMatch[1].trim();
-
-  // City matching
-  const bioLower = bio.toLowerCase();
-  for (const [cityName, countryName] of Object.entries(cityMap)) {
-    const regex = new RegExp(`\\b${cityName}\\b`, 'i');
-    if (regex.test(bioLower)) {
-      city = cityName.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-      if (!country) country = countryName;
-      break;
-    }
-  }
-
-  // Country name direct mention
-  if (!country) {
-    const countryNames = [...new Set([...Object.values(flagMap), ...Object.values(cityMap)])];
-    for (const c of countryNames) {
-      if (bioLower.includes(c.toLowerCase())) { country = c; break; }
-    }
-  }
-
-  return { country, city, raw };
-}
-
-// ---------------------------------------------------------------------------
-// Language detection
-// ---------------------------------------------------------------------------
-function detectLanguage(bio: string, captions: string[]): { primary: string; all: string[] } {
-  const allText = [bio, ...captions.slice(0, 5)].filter(Boolean).join(' ');
-  if (!allText || allText.length < 20) return { primary: 'unknown', all: [] };
-
-  const languageSignals: Record<string, string[]> = {
-    en: ['the', 'and', 'you', 'for', 'this', 'with', 'that', 'have', 'from', 'your', 'just', 'love', 'new', 'day', 'out', 'about', 'what', 'when'],
-    de: ['und', 'die', 'der', 'das', 'ist', 'ich', 'nicht', 'ein', 'mit', 'auch', 'auf', 'für', 'mein', 'aber', 'wir', 'noch', 'wie', 'hier'],
-    es: ['que', 'los', 'las', 'del', 'por', 'con', 'una', 'para', 'esta', 'como', 'pero', 'más', 'todo', 'sus', 'muy', 'también'],
-    fr: ['les', 'des', 'une', 'est', 'que', 'pour', 'pas', 'dans', 'sur', 'avec', 'plus', 'tout', 'cette', 'mon', 'mais', 'aussi'],
-    it: ['che', 'non', 'per', 'una', 'con', 'sono', 'questo', 'come', 'anche', 'più', 'della', 'molto', 'tutto', 'mia', 'dalla'],
-    pt: ['que', 'não', 'para', 'com', 'uma', 'mais', 'como', 'mas', 'por', 'muito', 'sua', 'esta', 'também', 'isso', 'quando'],
-    nl: ['het', 'een', 'van', 'dat', 'niet', 'met', 'voor', 'ook', 'maar', 'wel', 'nog', 'naar', 'deze', 'mijn', 'haar'],
-    tr: ['bir', 'bu', 'için', 'ile', 'çok', 'olan', 'gibi', 'daha', 'ben', 'var', 'ama', 'kadar', 'olarak'],
-    ar: ['في', 'من', 'على', 'إلى', 'هذا', 'عن', 'مع', 'لا', 'ما', 'هو', 'كل'],
-  };
-
-  const words = allText.toLowerCase().split(/[\s,.!?;:'"()\[\]{}#@]+/).filter((w) => w.length > 1);
-  const scores: Record<string, number> = {};
-
-  for (const [lang, signals] of Object.entries(languageSignals)) {
-    scores[lang] = 0;
-    for (const word of words) {
-      if (signals.includes(word)) scores[lang]++;
-    }
-  }
-
-  const sorted = Object.entries(scores)
-    .filter(([, score]) => score > 0)
-    .sort((a, b) => b[1] - a[1]);
-
-  if (sorted.length === 0) return { primary: 'unknown', all: [] };
-
-  const primary = sorted[0][0];
-  const all = sorted.filter(([, score]) => score > 2).map(([lang]) => lang);
-  return { primary, all: all.length > 0 ? all : [primary] };
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +146,7 @@ async function saveIntelligence(
   flags: { doEmails: boolean; doLanguage: boolean; doLocation: boolean; doAI: boolean },
   data: {
     language: { primary: string; all: string[] };
-    location: { country: string | null; city: string | null; raw: string | null };
+    location: DetectedLocation;
     emails: string[];
     aiSummary: string | null;
     website: string | null;
@@ -315,9 +179,19 @@ async function saveIntelligence(
     // Country and city are independent signals — e.g. a flag emoji resolves
     // country with no city mentioned. Each is only written when found, so a
     // miss on one doesn't clear a previously stored value on the other.
-    if (data.location.country) {
+    //
+    // An email-TLD country reaching this point has already been cleared by
+    // mayWriteEmailTldCountry. It is marked in intelligence_data.country_source
+    // so extract-locations still treats the row as open and a later bio signal
+    // replaces it; a bio signal clears the marker.
+    if (data.location.country && data.location.countrySource === 'email_tld') {
       profileUpdate.detected_country = data.location.country;
       creatorUpdate.country = data.location.country;
+      mergedIntelligenceData.country_source = 'email_tld';
+    } else if (data.location.country) {
+      profileUpdate.detected_country = data.location.country;
+      creatorUpdate.country = data.location.country;
+      delete mergedIntelligenceData.country_source;
     }
     if (data.location.city) {
       profileUpdate.detected_city = data.location.city;
@@ -391,7 +265,7 @@ export async function POST(request: Request) {
     // re-analysis queue rather than erroring.
     const candidates = await fetchAllRows<Record<string, unknown>>(() => supabase
       .from('social_profiles')
-      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, enriched_at, intelligence_updated_at, intelligence_data')
+      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, enriched_at, intelligence_updated_at, intelligence_data, detected_country, place_country_code')
       .eq('import_status', 'active')
       .not('enriched_at', 'is', null)
       .not('intelligence_updated_at', 'is', null)
@@ -406,7 +280,7 @@ export async function POST(request: Request) {
   } else {
     let query = supabase
       .from('social_profiles')
-      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data');
+      .select('id, handle, platform, bio, follower_count, enrichment_data, creator_id, intelligence_data, detected_country, place_country_code');
 
     // 'specific' is a deliberate manual override: a hand-typed handle wins
     // over the import_status gate. Every other mode respects it.
@@ -480,7 +354,24 @@ export async function POST(request: Request) {
 
       // Run extraction
       const emails = doEmails ? extractEmails(bio) : [];
-      const location = doLocation ? detectLocation(bio) : { country: null, city: null, raw: null };
+      // Emails are read for the location fallback whether or not doEmails is
+      // set; doEmails only governs whether they are stored.
+      const detected: DetectedLocation = doLocation
+        ? detectLocation(bio, extractEmails(bio))
+        : { country: null, city: null, raw: null, countrySource: null };
+      // The email-TLD country is a fallback, used only when nothing else has
+      // set a country — not this bio, not a stored country from any source,
+      // not a geotag. When it may not be written it is dropped here, so it
+      // reaches neither the database nor the result row.
+      const intelligenceData = profile.intelligence_data as Record<string, unknown> | null;
+      const fallbackBlocked = detected.countrySource === 'email_tld' && !mayWriteEmailTldCountry({
+        detectedCountry: (profile.detected_country as string | null) ?? null,
+        placeCountryCode: (profile.place_country_code as string | null) ?? null,
+        countrySource: typeof intelligenceData?.country_source === 'string' ? intelligenceData.country_source : null,
+      });
+      const location: DetectedLocation = fallbackBlocked
+        ? { ...detected, country: null, countrySource: null }
+        : detected;
       const language = doLanguage ? detectLanguage(bio, captions) : { primary: 'unknown', all: [] };
       const website = extractWebsite(bio);
 
@@ -493,7 +384,10 @@ export async function POST(request: Request) {
             enrichment,
             captions,
             bio,
-            location,
+            // Without the email-TLD country: extract-locations reads this
+            // summary back, and a guess stated in it would return as a
+            // confident answer.
+            location.countrySource === 'email_tld' ? { ...location, country: null } : location,
             language.primary
           );
         } catch (err) {
@@ -506,7 +400,7 @@ export async function POST(request: Request) {
       await saveIntelligence(
         profile.id as string,
         profile.creator_id as string,
-        (profile.intelligence_data as Record<string, unknown> | null) ?? null,
+        intelligenceData ?? null,
         { doEmails, doLanguage, doLocation, doAI },
         {
           language,
