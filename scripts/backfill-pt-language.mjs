@@ -1,34 +1,43 @@
 #!/usr/bin/env node
 /**
- * Clears stored Portuguese language labels that the current heuristic no
- * longer gives. Portuguese only; every other language is left as it is.
+ * Brings stored Portuguese language labels in line with the current
+ * heuristic. Only rows labelled 'pt' are touched; every other language is
+ * left as it is.
  *
  * WHY THIS EXISTS. The heuristic used to split "yahoo.com" into the token
  * "com", a Portuguese stopword, and to hand a tie to whichever language its
- * table listed first. Both are fixed in lib/bioSignals.ts. But re-running
- * Intelligence does not clear a label when the new answer is "no label" — it
- * writes only what it finds (deferred-cleanups item 38) — so the bad
- * Portuguese labels stay until something nulls them. Where the new answer is
- * another language, an ordinary Intelligence re-run corrects it; this script
- * does not touch those.
+ * table listed first. Both are fixed in lib/bioSignals.ts, but the stored
+ * labels do not follow on their own:
+ *
+ *   - Where the new answer is NO label, re-running Intelligence keeps the old
+ *     one — it writes only what it finds (deferred-cleanups item 38).
+ *   - Where the new answer is ANOTHER language, a re-run would write it, but
+ *     nothing reliably re-runs these profiles. The default queue ("Not yet
+ *     analyzed") never revisits an analysed profile. Measured 2026-10-11 on the
+ *     104 in this group: "Needs re-analysis" reaches 87 of them (re-enriched
+ *     since their last analysis), only if someone runs that mode; 17 are
+ *     reached by no queue mode, only by "Re-analyze all" or by handle.
  *
  * WHAT IT DOES, per profile with social_profiles.detected_language = 'pt':
  *   1. Reads the captions exactly as app/api/intelligence/analyze reads them
  *      (caption not null, limit 15, no order) and runs the application's own
  *      detectLanguage over bio + captions.
- *   2. If the answer is no label, nulls social_profiles.detected_language and,
- *      where it is still 'pt', creators.primary_language — marking the creator
- *      ai_embedded = false, as an Intelligence pass does, because the
- *      embedding text carries the language.
- *   3. Skips any creator with more than one social profile: its
+ *   2. No label: nulls social_profiles.detected_language and, where it is
+ *      still 'pt', creators.primary_language.
+ *   3. Another language: writes that language to both, the same value an
+ *      Intelligence pass would write. Still 'pt': nothing.
+ *   4. Marks each changed creator ai_embedded = false, as an Intelligence pass
+ *      does, because the embedding text carries the language.
+ *   5. Skips any creator with more than one social profile: its
  *      primary_language may come from the other one.
  *
  * Every write is guarded on the value still being 'pt', so a label changed by
  * anything else in the meantime is left alone. intelligence_data.languages is
- * not touched; nothing in this repo reads it.
+ * not touched; nothing in this repo reads it. Nor is intelligence_updated_at:
+ * this is not an Intelligence pass.
  *
  * Usage:
- *   node scripts/backfill-pt-language.mjs            # dry run: reads only, prints the count
+ *   node scripts/backfill-pt-language.mjs            # dry run: reads only, prints the counts
  *   node scripts/backfill-pt-language.mjs --apply    # writes
  */
 import fs from 'fs';
@@ -85,48 +94,69 @@ for (const batch of chunk(profiles, 10)) {
 
 const byAnswer = results.reduce((a, r) => { a[r.answer] = (a[r.answer] || 0) + 1; return a; }, {});
 console.log(`new heuristic on those profiles: ${JSON.stringify(byAnswer)}`);
-console.log('  pt: unchanged. Another language: left for an ordinary Intelligence re-run.');
 
-const withheld = results.filter(r => r.answer === 'unknown');
+// 'unknown' -> null; another language -> that language; 'pt' -> untouched.
+const changing = results
+  .filter(r => r.answer !== 'pt')
+  .map(r => ({ ...r, newLabel: r.answer === 'unknown' ? null : r.answer }));
 
 // Creators with more than one profile are skipped.
 const profileCount = new Map();
-for (const ids of chunk([...new Set(withheld.map(r => r.creator_id).filter(Boolean))], 100)) {
+for (const ids of chunk([...new Set(changing.map(r => r.creator_id).filter(Boolean))], 100)) {
   for (const row of await get(`social_profiles?select=creator_id&creator_id=in.(${ids.join(',')})`)) {
     profileCount.set(row.creator_id, (profileCount.get(row.creator_id) || 0) + 1);
   }
 }
-const skipped = withheld.filter(r => (profileCount.get(r.creator_id) || 0) > 1);
-const targets = withheld.filter(r => (profileCount.get(r.creator_id) || 0) <= 1);
+const skipped = changing.filter(r => (profileCount.get(r.creator_id) || 0) > 1);
+const targets = changing.filter(r => (profileCount.get(r.creator_id) || 0) <= 1);
 
-const checkable = targets.filter(r => r.post_language);
-console.log(`\nwould null: ${targets.length} profiles (skipped, creator has several profiles: ${skipped.length})`);
-console.log(`  of those with a TikTok post language to check against: ${checkable.length}, ` +
-  `of which post language says pt: ${checkable.filter(r => r.post_language === 'pt').length}`);
+const report = (label, rows) => {
+  const checkable = rows.filter(r => r.post_language);
+  const agree = label === 'null'
+    ? `of which post language says pt: ${checkable.filter(r => r.post_language === 'pt').length}`
+    : `of which post language agrees with the new label: ${checkable.filter(r => r.post_language === r.newLabel).length}, says pt: ${checkable.filter(r => r.post_language === 'pt').length}`;
+  console.log(`  ${label.padEnd(8)} ${String(rows.length).padStart(4)}   with a TikTok post language: ${checkable.length}, ${agree}`);
+};
+const toNull = targets.filter(r => r.newLabel === null);
+const relabel = targets.filter(r => r.newLabel !== null);
+console.log(`\nwould change: ${targets.length} profiles (skipped, creator has several profiles: ${skipped.length})`);
+report('null', toNull);
+report('relabel', relabel);
+console.log(`  relabel to: ${JSON.stringify(relabel.reduce((a, r) => { a[r.newLabel] = (a[r.newLabel] || 0) + 1; return a; }, {}))}`);
 console.log('\nsample:');
-for (const r of targets.slice(0, 15)) {
-  console.log(`  @${r.handle} [${r.platform}] post=${r.post_language || '-'} :: ${JSON.stringify((r.bio || '').replace(/\s+/g, ' ').slice(0, 80))}`);
+for (const r of [...toNull.slice(0, 8), ...relabel.slice(0, 8)]) {
+  console.log(`  @${r.handle} [${r.platform}] pt -> ${r.newLabel ?? 'null'} post=${r.post_language || '-'} :: ${JSON.stringify((r.bio || '').replace(/\s+/g, ' ').slice(0, 80))}`);
 }
 
 if (!APPLY) process.exit(0);
 
+// One PATCH per (target label, batch), each guarded on the value still being 'pt'.
 let profilesWritten = 0, creatorsWritten = 0;
-for (const batch of chunk(targets, 100)) {
-  const ids = batch.map(r => r.id).join(',');
-  const r1 = await fetch(`${U}/rest/v1/social_profiles?id=in.(${ids})&detected_language=eq.pt`, {
-    method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-    body: JSON.stringify({ detected_language: null }),
-  });
-  if (!r1.ok) throw new Error(`social_profiles: ${r1.status} ${await r1.text()}`);
-  profilesWritten += (await r1.json()).length;
+const byLabel = new Map();
+for (const r of targets) {
+  const key = r.newLabel ?? '';
+  if (!byLabel.has(key)) byLabel.set(key, []);
+  byLabel.get(key).push(r);
+}
+for (const [key, rows] of byLabel) {
+  const label = key === '' ? null : key;
+  for (const batch of chunk(rows, 100)) {
+    const ids = batch.map(r => r.id).join(',');
+    const r1 = await fetch(`${U}/rest/v1/social_profiles?id=in.(${ids})&detected_language=eq.pt`, {
+      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
+      body: JSON.stringify({ detected_language: label }),
+    });
+    if (!r1.ok) throw new Error(`social_profiles: ${r1.status} ${await r1.text()}`);
+    profilesWritten += (await r1.json()).length;
 
-  const creatorIds = batch.map(r => r.creator_id).filter(Boolean).join(',');
-  if (!creatorIds) continue;
-  const r2 = await fetch(`${U}/rest/v1/creators?id=in.(${creatorIds})&primary_language=eq.pt`, {
-    method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-    body: JSON.stringify({ primary_language: null, ai_embedded: false }),
-  });
-  if (!r2.ok) throw new Error(`creators: ${r2.status} ${await r2.text()}`);
-  creatorsWritten += (await r2.json()).length;
+    const creatorIds = batch.map(r => r.creator_id).filter(Boolean).join(',');
+    if (!creatorIds) continue;
+    const r2 = await fetch(`${U}/rest/v1/creators?id=in.(${creatorIds})&primary_language=eq.pt`, {
+      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
+      body: JSON.stringify({ primary_language: label, ai_embedded: false }),
+    });
+    if (!r2.ok) throw new Error(`creators: ${r2.status} ${await r2.text()}`);
+    creatorsWritten += (await r2.json()).length;
+  }
 }
 console.log(`\nwritten: ${profilesWritten} social_profiles, ${creatorsWritten} creators`);

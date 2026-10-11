@@ -1300,11 +1300,24 @@ a label the new rule would not give**: pt 225, es 166, en 120, fr 10, it 2,
 de 2.
 
 **Portuguese has a script:** `scripts/backfill-pt-language.mjs`, dry run by
-default. Its dry run on 2026-10-11: 618 profiles labelled pt; the new rule
-gives no label for 225, which it would null (0 skipped for having several
-profiles). Of the 46 of those with a TikTok post language, 2 say pt. Not
-applied — the backfill is a separate decision. The other languages have no
-script; their stale labels are fewer and their old labels were mostly right.
+default. It nulls stored pt labels the new rule withholds, and writes the new
+rule's language where it gives another one — because nothing reliably re-runs
+those: the default queue ("Not yet analyzed") never revisits an analysed
+profile, "Needs re-analysis" reached 87 of the 104 on 2026-10-11 only if run,
+and 17 are reached by no queue mode at all. Its dry run that day: 618 labelled
+pt; 225 to null (46 checkable against TikTok post language, 2 of them pt) and
+104 to relabel (en 68, es 26, de 4, it 2, nl 2, fr 1, tr 1; 8 checkable, all 8
+agreeing). 0 skipped for having several profiles. Not applied — the backfill
+is a separate decision.
+
+The ten minor-language relabels were read by eye: 4 right, 4 wrong, 2 unclear.
+The wrong ones are languages the stopword table does not have (Polish and
+Hungarian, landing on de and nl) and a Colombian bio landing on nl. All ten
+are wrong as pt today, and an Intelligence re-run would write the same
+labels; the heuristic's language table is the limit, not the backfill.
+
+The other languages have no script; their stale labels are fewer and their
+old labels were mostly right.
 
 **Also measured, for the same decision:** against TikTok's per-post language
 (2,308 profiles carrying both), the old heuristic agreed 93.6% with 96
