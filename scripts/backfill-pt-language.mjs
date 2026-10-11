@@ -32,7 +32,16 @@
  *      primary_language may come from the other one.
  *
  * Every write is guarded on the value still being 'pt', so a label changed by
- * anything else in the meantime is left alone. intelligence_data.languages is
+ * anything else in the meantime is left alone.
+ *
+ * RESUMABLE. The first --apply on 2026-10-11 nulled 100 profiles and then hit
+ * the statement timeout on the matching creators UPDATE, which rolled back —
+ * leaving 100 creators on 'pt' whose profile no longer was, and which a rerun
+ * would never select, because it starts from profiles still labelled 'pt'. So
+ * every run (dry or not) also reconciles the mirror: a creator still on 'pt'
+ * whose only profile is not 'pt' gets the profile's value. Writes go in small
+ * batches (creators 10, profiles 50; each row update re-indexes the row) and a
+ * timed-out batch is retried in halves. intelligence_data.languages is
  * not touched; nothing in this repo reads it. Nor is intelligence_updated_at:
  * this is not an Intelligence pass.
  *
@@ -128,35 +137,71 @@ for (const r of [...toNull.slice(0, 8), ...relabel.slice(0, 8)]) {
   console.log(`  @${r.handle} [${r.platform}] pt -> ${r.newLabel ?? 'null'} post=${r.post_language || '-'} :: ${JSON.stringify((r.bio || '').replace(/\s+/g, ' ').slice(0, 80))}`);
 }
 
+// ── The creators mirror ──────────────────────────────────────────────────────
+// Creators still on 'pt' whose only profile no longer is — left behind by an
+// interrupted run. Profiles about to be changed above are excluded: their
+// creators are written with them.
+const targetCreators = new Set(targets.map(r => r.creator_id));
+const ptCreators = await page('creators?select=id&primary_language=eq.pt&order=id.asc');
+const profilesOf = new Map();
+for (const ids of chunk(ptCreators.map(c => c.id), 100)) {
+  for (const row of await get(`social_profiles?select=creator_id,detected_language&creator_id=in.(${ids.join(',')})`)) {
+    if (!profilesOf.has(row.creator_id)) profilesOf.set(row.creator_id, []);
+    profilesOf.get(row.creator_id).push(row.detected_language);
+  }
+}
+const mirrorFixes = ptCreators
+  .filter(c => !targetCreators.has(c.id))
+  .filter(c => (profilesOf.get(c.id) || []).length === 1 && profilesOf.get(c.id)[0] !== 'pt')
+  .map(c => ({ creator_id: c.id, newLabel: profilesOf.get(c.id)[0] ?? null }));
+console.log(`\ncreator mirrors out of step (creator 'pt', its only profile not): ${mirrorFixes.length}` +
+  (mirrorFixes.length ? ` ${JSON.stringify(mirrorFixes.reduce((a, m) => { const k = String(m.newLabel); a[k] = (a[k] || 0) + 1; return a; }, {}))}` : ''));
+
 if (!APPLY) process.exit(0);
 
-// One PATCH per (target label, batch), each guarded on the value still being 'pt'.
-let profilesWritten = 0, creatorsWritten = 0;
-const byLabel = new Map();
-for (const r of targets) {
-  const key = r.newLabel ?? '';
-  if (!byLabel.has(key)) byLabel.set(key, []);
-  byLabel.get(key).push(r);
-}
-for (const [key, rows] of byLabel) {
-  const label = key === '' ? null : key;
-  for (const batch of chunk(rows, 100)) {
-    const ids = batch.map(r => r.id).join(',');
-    const r1 = await fetch(`${U}/rest/v1/social_profiles?id=in.(${ids})&detected_language=eq.pt`, {
-      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-      body: JSON.stringify({ detected_language: label }),
-    });
-    if (!r1.ok) throw new Error(`social_profiles: ${r1.status} ${await r1.text()}`);
-    profilesWritten += (await r1.json()).length;
+// ── Writes ───────────────────────────────────────────────────────────────────
 
-    const creatorIds = batch.map(r => r.creator_id).filter(Boolean).join(',');
-    if (!creatorIds) continue;
-    const r2 = await fetch(`${U}/rest/v1/creators?id=in.(${creatorIds})&primary_language=eq.pt`, {
-      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-      body: JSON.stringify({ primary_language: label, ai_embedded: false }),
+/**
+ * PATCHes `table` for the given ids, guarded by `guard`, in batches of `size`.
+ * Returns only ids, and halves a batch that hits the statement timeout.
+ */
+const patchIds = async (table, ids, guard, body, size) => {
+  let written = 0;
+  const run = async (batch) => {
+    const r = await fetch(`${U}/rest/v1/${table}?id=in.(${batch.join(',')})&${guard}&select=id`, {
+      method: 'PATCH', headers: { ...H, Prefer: 'return=representation' }, body: JSON.stringify(body),
     });
-    if (!r2.ok) throw new Error(`creators: ${r2.status} ${await r2.text()}`);
-    creatorsWritten += (await r2.json()).length;
-  }
+    if (r.ok) { written += (await r.json()).length; return; }
+    const text = await r.text();
+    if (text.includes('57014') && batch.length > 1) {
+      const half = Math.ceil(batch.length / 2);
+      await run(batch.slice(0, half));
+      await run(batch.slice(half));
+      return;
+    }
+    throw new Error(`${table}: ${r.status} ${text}`);
+  };
+  for (const batch of chunk(ids, size)) await run(batch);
+  return written;
+};
+
+const byLabel = new Map();
+const group = (label, profileId, creatorId) => {
+  const key = label ?? '';
+  if (!byLabel.has(key)) byLabel.set(key, { profiles: [], creators: [] });
+  if (profileId) byLabel.get(key).profiles.push(profileId);
+  if (creatorId) byLabel.get(key).creators.push(creatorId);
+};
+for (const r of targets) group(r.newLabel, r.id, r.creator_id);
+for (const m of mirrorFixes) group(m.newLabel, null, m.creator_id);
+
+let profilesWritten = 0, creatorsWritten = 0;
+for (const [key, { profiles: profileIds, creators: creatorIds }] of byLabel) {
+  const label = key === '' ? null : key;
+  // Profile first, then its creator: if the creator write fails, the mirror
+  // step on the next run finds it.
+  profilesWritten += await patchIds('social_profiles', profileIds, 'detected_language=eq.pt', { detected_language: label }, 50);
+  creatorsWritten += await patchIds('creators', creatorIds, 'primary_language=eq.pt', { primary_language: label, ai_embedded: false }, 10);
+  console.log(`  ${String(label).padEnd(5)} profiles ${profileIds.length}, creators ${creatorIds.length} — done`);
 }
 console.log(`\nwritten: ${profilesWritten} social_profiles, ${creatorsWritten} creators`);
