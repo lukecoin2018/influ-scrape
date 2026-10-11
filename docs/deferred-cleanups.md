@@ -1307,8 +1307,15 @@ profile, "Needs re-analysis" reached 87 of the 104 on 2026-10-11 only if run,
 and 17 are reached by no queue mode at all. Its dry run that day: 618 labelled
 pt; 225 to null (46 checkable against TikTok post language, 2 of them pt) and
 104 to relabel (en 68, es 26, de 4, it 2, nl 2, fr 1, tr 1; 8 checkable, all 8
-agreeing). 0 skipped for having several profiles. Not applied — the backfill
-is a separate decision.
+agreeing). 0 skipped for having several profiles.
+
+**APPLIED 2026-10-11.** The first `--apply` nulled 100 profiles and then hit
+the statement timeout on the matching 100-row creators UPDATE, which rolled
+back. The script was made resumable (mirror reconciliation, batches of 10 for
+creators, halving on timeout) and rerun: 229 social_profiles and 329 creators
+written. Afterwards the dry run finds nothing to change, 289 profiles and 289
+creators carry pt, no profile's creator mirror disagrees, and the 329 changed
+creators are marked ai_embedded = false for re-embedding.
 
 The ten minor-language relabels were read by eye: 4 right, 4 wrong, 2 unclear.
 The wrong ones are languages the stopword table does not have (Polish and
@@ -1327,7 +1334,8 @@ tie-breaker recovered 14 of the 30 lost by treating every tie as no answer,
 without adding a wrong Portuguese label (3 before and after it, 77 on main).
 Across all profiles, 206 es labels become no label.
 
-**Trigger:** the backfill decision.
+**Trigger:** Portuguese is done. For the other languages (es 166, en 120,
+fr 10, it 2, de 2 stale labels), the backfill decision.
 
 ---
 
