@@ -165,6 +165,9 @@ export default function Home() {
           platform: item.platform,
           searchSource: item.searchSource,
           haltOnLowCoverage: item.config.haltOnLowCoverage,
+          // Undefined is dropped by JSON.stringify, so a run without a region
+          // sends exactly the body it always did.
+          location: item.config.keywordRegion,
           resultsPerHashtag: item.config.resultsPerHashtag,
           minFollowers: item.config.minFollowers,
           maxFollowers: item.config.maxFollowers,
