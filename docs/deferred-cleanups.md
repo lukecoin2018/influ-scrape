@@ -1219,3 +1219,132 @@ in, or drop the "@".
 
 **Trigger:** the next change to seed expansion, and before the next batch of
 seeds that is large enough for a short traversal to matter.
+
+---
+
+## 35. NEXT PR — collab words are substring-matched beside a mention
+
+**Where:** `extractMentionCollabPatterns` in `lib/brandDetection.ts` —
+`collabWords.some(word => context.includes(word))`.
+
+The context is 20 characters before a mention and 40 after it, and every
+collab word is matched as a substring. `ad` therefore fires inside "made",
+"cartagenadeindias", "Stadt" and the next handle (`@adidasoriginals`);
+`partner`, `publi`, `collab` and `ambassador` do the same at lower rates.
+
+**Measured 2026-10-11** on the 6,607 stored posts of the 212 DACH-or-German
+profiles: of 275 posts flagged sponsored on `mention_collab_pattern` alone
+(no hashtag or phrase signal), **135 fire only on a substring**: 199 hits on
+`ad`, 3 each on `partner`, `publi` and `ambassador`, 2 on `collab`. 38 of the
+135 are on German-labelled profiles.
+
+**Why not in the DACH change:** it is not German-specific and it moves
+`is_sponsored` across the whole database the next time re-detection runs, so
+it gets its own change and its own before/after. Decided 2026-10-11 to follow
+the DACH PR directly.
+
+**The fix:** match whole words (a letter on neither side), as the German label
+rule already does, and assert in a test that "made", "Stadt" and
+"@adidasoriginals" no longer fire.
+
+---
+
+## 36. The Impressum signal is not used
+
+**Where:** nothing reads it; the place would be `detectLocation` in
+`lib/bioSignals.ts`.
+
+German law requires an Impressum, and creators link or name one in the bio
+("Impressum: @nca_impressum", "Meine Codes & Favs & Impressum ⬇️"). Measured
+2026-10-11: 72 profiles carry a .de/.at/.ch address or an Impressum; 49 of
+them were already DACH or German by other signals.
+
+**Why deferred:** the email-TLD fallback covers most of the same profiles, and
+an Impressum says German-language legal entity, not which of DE/AT/CH. Logged
+by decision 2026-10-11 rather than built.
+
+**Trigger:** the TLD fallback leaves DACH creators unplaced that an Impressum
+would catch — check the Impressum-only rows first.
+
+---
+
+## 37. The location prompt's language rule has no German case
+
+**Where:** `app/api/extract-locations/route.ts`, the Haiku prompt.
+
+It treats an audience-language signal as weak (0.75 cap) and special-cases
+Portuguese — "Portuguese-speaking does NOT mean Portugal" — and nothing else.
+German has the same shape: German-speaking does not mean Germany, and an
+Austrian or Swiss creator described as German-speaking is likely to come back
+as Germany at up to 0.75.
+
+**Why deferred:** logged by decision 2026-10-11. It is a prompt change whose
+effect can only be read on re-extraction, and the DACH set is small enough
+(186 placed) that the error is cheaper to check by hand first.
+
+**Trigger:** the first Austrian or Swiss creator found placed in Germany by
+`extract-locations`.
+
+---
+
+## 38. Re-analysis does not clear a language label the heuristic now withholds
+
+**Where:** `saveIntelligence` in `app/api/intelligence/analyze/route.ts` — a
+`detected_language` is written only when the heuristic returns one.
+
+The 2026-10-11 heuristic change (emails, URLs and domains stripped; a tie is
+no answer) returns `unknown` where it used to guess. Re-analysis keeps the
+stored label in that case, by design ("no signal isn't a license to null").
+So **607 profiles keep a label the new rule would not give**: pt 249, es 221,
+en 121, fr 10, de 4, it 2.
+
+A backfill that wants the new answers must null those explicitly; re-running
+Intelligence alone fixes the profiles whose answer changes to another
+language and leaves these.
+
+**Also measured, for the same decision:** against TikTok's per-post language
+(2,308 profiles carrying both), the old heuristic agreed 93.6% with 96
+unlabelled; the new one agrees 97.4% with 220 unlabelled. The cost falls on
+Spanish, which shares `que`, `por`, `para` and `como` with Portuguese: of 36
+Spanish labels the tie rule withholds there, 30 were right. Across all
+profiles, 271 es labels become no label.
+
+**Trigger:** the backfill decision.
+
+---
+
+## 39. Keyword region is not recorded on the run
+
+**Where:** `discovery_runs` has no column for it; the region reaches
+`/api/discover/process` per term and goes no further.
+
+Added 2026-10-11 as a select for TikTok keyword runs. The actor documents the
+field as cosmetic (TikTok ranks by exit IP), and the A/B that would test it was
+not run — the local Apify account had hit its monthly hard limit. See
+`docs/dach-probe.md` section 3.
+
+**Why deferred:** no schema change in the DACH work; `docs/dach-probe.md`
+records the region per run by hand.
+
+**Trigger:** the A/B shows the region changes results, or a second region is
+used in earnest. Then store it on `discovery_runs`.
+
+---
+
+## 40. German label positions the rule does not cover
+
+**Where:** `GERMAN_LABEL_PATTERNS` in `lib/brandDetection.ts`.
+
+The rule counts "Anzeige"/"Werbung" as the caption's leading word, after
+`*` `|` `[` `(`, or before a colon — as decided 2026-10-11. Of the 345
+labelled posts it was written for, it catches 290. The rest:
+
+    label at the start of a later LINE          22   "...\n\nWerbung"
+    unpaid label (excluded on purpose)          13
+    after "/" or "//"                           10   "a cut // Anzeige"
+    elsewhere mid-caption                       10   "501 🤍 Anzeige"
+
+**Why deferred:** the positions were specified; widening them is a decision,
+and line-start and `//` are the two worth taking.
+
+**Trigger:** the next change to the German rule.
