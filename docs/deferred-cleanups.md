@@ -1293,21 +1293,26 @@ effect can only be read on re-extraction, and the DACH set is small enough
 `detected_language` is written only when the heuristic returns one.
 
 The 2026-10-11 heuristic change (emails, URLs and domains stripped; a tie is
-no answer) returns `unknown` where it used to guess. Re-analysis keeps the
-stored label in that case, by design ("no signal isn't a license to null").
-So **607 profiles keep a label the new rule would not give**: pt 249, es 221,
-en 121, fr 10, de 4, it 2.
+no answer unless it is a Spanish–Portuguese tie the text settles) returns
+`unknown` where it used to guess. Re-analysis keeps the stored label in that
+case, by design ("no signal isn't a license to null"). So **525 profiles keep
+a label the new rule would not give**: pt 225, es 166, en 120, fr 10, it 2,
+de 2.
 
-A backfill that wants the new answers must null those explicitly; re-running
-Intelligence alone fixes the profiles whose answer changes to another
-language and leaves these.
+**Portuguese has a script:** `scripts/backfill-pt-language.mjs`, dry run by
+default. Its dry run on 2026-10-11: 618 profiles labelled pt; the new rule
+gives no label for 225, which it would null (0 skipped for having several
+profiles). Of the 46 of those with a TikTok post language, 2 say pt. Not
+applied — the backfill is a separate decision. The other languages have no
+script; their stale labels are fewer and their old labels were mostly right.
 
 **Also measured, for the same decision:** against TikTok's per-post language
 (2,308 profiles carrying both), the old heuristic agreed 93.6% with 96
-unlabelled; the new one agrees 97.4% with 220 unlabelled. The cost falls on
-Spanish, which shares `que`, `por`, `para` and `como` with Portuguese: of 36
-Spanish labels the tie rule withholds there, 30 were right. Across all
-profiles, 271 es labels become no label.
+unlabelled; the new one agrees 97.4% with 204 unlabelled. Spanish-language
+creators (by post language) labelled es: 403 of 462 before, 387 now — the
+tie-breaker recovered 14 of the 30 lost by treating every tie as no answer,
+without adding a wrong Portuguese label (3 before and after it, 77 on main).
+Across all profiles, 206 es labels become no label.
 
 **Trigger:** the backfill decision.
 

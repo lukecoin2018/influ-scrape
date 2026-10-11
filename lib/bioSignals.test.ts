@@ -30,12 +30,64 @@ test('"com" as a real Portuguese word still counts', () => {
 // ── Language: a tie is no answer ────────────────────────────────────────────
 
 test('a tie yields no label rather than the first language in the table', () => {
-  // @luhtrends: one hit each for de ("das"), es and pt ("como"). The old
-  // stable sort handed it to German by list order.
-  const bio = 'Achadinhos do TikTok Shop 🛍️ Como Faço meus vídeos das compras';
-  assert.deepEqual(scoreLanguages(bio, []).map(([, n]) => n), [1, 1, 1]);
+  // en 1 ("and"), de 1 ("und"). The old stable sort gave it to English.
+  const bio = 'Summer days and Sommer und Sonne';
+  assert.deepEqual(scoreLanguages(bio, []).map(([, n]) => n), [1, 1]);
   assert.equal(detectLanguage(bio, []).primary, 'unknown');
   assert.deepEqual(detectLanguage(bio, []).all, []);
+});
+
+// ── Language: the Spanish–Portuguese tie-breaker ────────────────────────────
+
+test('an es/pt tie with nothing to tell them apart is still no label', () => {
+  // A real bio from the dry run: es 2, pt 2, fr 1 — que and por are both.
+  const bio = 'Detalles que hablan por ti 💌 Disponible en Rappi & PedidosYa';
+  assert.equal(detectLanguage(bio, []).primary, 'unknown');
+});
+
+test('Spanish marks settle an es/pt tie as Spanish', () => {
+  // ñ — es 2, pt 2 ("que", "para"), fr 1
+  assert.equal(detectLanguage('Ropa nueva que llega para mañana', []).primary, 'es');
+  // ¿ — es 2, pt 2 ("esta", "para")
+  assert.equal(detectLanguage('¿Y esta para ti? Nuevo look', []).primary, 'es');
+  // ¡
+  assert.equal(detectLanguage('¡Por fin! Lo que esperaba', []).primary, 'es');
+});
+
+test('a Spanish-only word settles an es/pt tie as Spanish', () => {
+  // es: que, los. pt: que, mas — "mas" is written in Spanish too, so it is
+  // not Portuguese evidence; "los" is Spanish evidence.
+  const text = 'Lo que los fans piden mas';
+  assert.deepEqual(scoreLanguages(text, []).slice(0, 2).map(([, n]) => n), [2, 2]);
+  assert.equal(detectLanguage(text, []).primary, 'es');
+});
+
+test('Portuguese marks and words settle an es/pt tie as Portuguese', () => {
+  // ã
+  assert.equal(detectLanguage('Looks que chegam para São Paulo', []).primary, 'pt');
+  // você — es 2, pt 2 ("que", "para"), fr 1
+  assert.equal(detectLanguage('Looks que valorizam para você', []).primary, 'pt');
+  // ç — @luhtrends: de 1 ("das"), es 1, pt 1 ("como"). Labelled German by
+  // list order before this change; Brazilian, and now Portuguese.
+  const luhtrends = 'Achadinhos do TikTok Shop 🛍️ Como Faço meus vídeos das compras';
+  assert.deepEqual(scoreLanguages(luhtrends, []).map(([, n]) => n), [1, 1, 1]);
+  assert.equal(detectLanguage(luhtrends, []).primary, 'pt');
+});
+
+test('evidence for both languages is no label', () => {
+  assert.equal(detectLanguage('Ropa que llega para mañana em São Paulo', []).primary, 'unknown');
+});
+
+test('ç is not Portuguese evidence when French is in the tie', () => {
+  // es 1, fr 1, pt 1 on "que". French writes ç too.
+  const text = 'Alors que ça marche bien';
+  assert.deepEqual(scoreLanguages(text, []).map(([, n]) => n), [1, 1, 1]);
+  assert.equal(detectLanguage(text, []).primary, 'unknown');
+});
+
+test('the tie-breaker does not touch ties without both es and pt', () => {
+  // es 1, it 1 ("con") — Spanish-only versus Portuguese, but Italian too.
+  assert.equal(detectLanguage('Fotos con amigos ñ', []).primary, 'unknown');
 });
 
 test('a clear winner is unchanged', () => {

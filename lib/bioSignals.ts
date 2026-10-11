@@ -215,10 +215,19 @@ export function stripNonLanguageTokens(text: string): string {
     .replace(DOMAIN_TOKEN_PATTERN, ' ');
 }
 
+/** The text the heuristic reads, lowercased and stripped, and its words. */
+function prepareText(bio: string, captions: string[]): { text: string; words: string[] } {
+  const text = stripNonLanguageTokens([bio, ...captions.slice(0, 5)].filter(Boolean).join(' ')).toLowerCase();
+  const words = text.split(/[\s,.!?;:'"()\[\]{}#@]+/).filter((w) => w.length > 1);
+  return { text, words };
+}
+
 /** Stopword hits per language, highest first; languages with none omitted. */
 export function scoreLanguages(bio: string, captions: string[]): [string, number][] {
-  const allText = stripNonLanguageTokens([bio, ...captions.slice(0, 5)].filter(Boolean).join(' '));
-  const words = allText.toLowerCase().split(/[\s,.!?;:'"()\[\]{}#@]+/).filter((w) => w.length > 1);
+  return scoreWords(prepareText(bio, captions).words);
+}
+
+function scoreWords(words: string[]): [string, number][] {
   const scores: Record<string, number> = {};
 
   for (const [lang, signals] of Object.entries(LANGUAGE_SIGNALS)) {
@@ -233,20 +242,76 @@ export function scoreLanguages(bio: string, captions: string[]): [string, number
     .sort((a, b) => b[1] - a[1]);
 }
 
+// ── Spanish–Portuguese tie-breaker ────────────────────────────────────────────
+//
+// Spanish and Portuguese share que, por, para, como and esta, so a short
+// Spanish text often ties with Portuguese — and, through que, with French.
+// Treating every tie as no answer withheld 271 Spanish labels, 30 of 36 of the
+// checkable ones correct. Where Spanish and Portuguese are tied for first, the
+// text usually carries something only one of them writes.
+//
+// Evidence counts only if no OTHER language in the same tie shares it:
+// "ç" is French and Turkish too, "con", "una", "del", "sua" and "quando" are
+// Italian, "mais" is French. A French text tied es/fr/pt on "que" must not
+// become Portuguese because it says "ça".
+
+const SPANISH_MARKS = ['ñ', '¿', '¡'];
+const PORTUGUESE_MARKS = ['ã', 'õ', 'ç'];
+
+/** Spanish stopwords Portuguese does not have. "todo" is excluded: it is Portuguese too. */
+const SPANISH_ONLY_WORDS = ['los', 'las', 'del', 'con', 'una', 'pero', 'más', 'sus', 'muy', 'también'];
+/** Portuguese words Spanish does not have. */
+const PORTUGUESE_ONLY_WORDS = ['não', 'você', 'vocês', 'com', 'uma', 'mais', 'muito', 'sua', 'isso', 'quando', 'também'];
+
+/** Evidence that stops counting when the named languages are also in the tie. */
+const SHARED_WITH: Record<string, string[]> = {
+  'ç': ['fr', 'tr'],
+  'con': ['it'], 'una': ['it'], 'del': ['it'],
+  'mais': ['fr'], 'sua': ['it'], 'quando': ['it'],
+};
+
+/**
+ * 'es' or 'pt' when the tied languages include both and the text has evidence
+ * for exactly one of them; null otherwise, including when it has evidence for
+ * both.
+ */
+function breakSpanishPortugueseTie(text: string, words: string[], tied: string[]): 'es' | 'pt' | null {
+  if (!tied.includes('es') || !tied.includes('pt')) return null;
+  const others = tied.filter((l) => l !== 'es' && l !== 'pt');
+  const counts = (evidence: string) => !(SHARED_WITH[evidence] ?? []).some((l) => others.includes(l));
+
+  const spanish = SPANISH_MARKS.some((c) => counts(c) && text.includes(c))
+    || words.some((w) => SPANISH_ONLY_WORDS.includes(w) && counts(w));
+  const portuguese = PORTUGUESE_MARKS.some((c) => counts(c) && text.includes(c))
+    || words.some((w) => PORTUGUESE_ONLY_WORDS.includes(w) && counts(w));
+
+  if (spanish && !portuguese) return 'es';
+  if (portuguese && !spanish) return 'pt';
+  return null;
+}
+
 export function detectLanguage(bio: string, captions: string[]): { primary: string; all: string[] } {
   const allText = [bio, ...captions.slice(0, 5)].filter(Boolean).join(' ');
   if (!allText || allText.length < 20) return { primary: 'unknown', all: [] };
 
-  const sorted = scoreLanguages(bio, captions);
+  const { text, words } = prepareText(bio, captions);
+  const sorted = scoreWords(words);
   if (sorted.length === 0) return { primary: 'unknown', all: [] };
 
-  // CHANGED 2026-10: a tie is no answer. The sort is stable, so a tie used to
-  // go to whichever language the table lists first — en, then de, es, fr…
-  // @luhtrends, a Brazilian shop account, scored de 1 ("das", also Portuguese),
-  // es 1, pt 1 and was labelled German by list order.
-  if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) return { primary: 'unknown', all: [] };
+  let primary = sorted[0][0];
 
-  const primary = sorted[0][0];
+  // CHANGED 2026-10: a tie is no answer, except a Spanish–Portuguese tie the
+  // text itself settles (above). The sort is stable, so a tie used to go to
+  // whichever language the table lists first — en, then de, es, fr…
+  // @luhtrends, a Brazilian shop account, scored de 1 ("das", also
+  // Portuguese), es 1, pt 1 and was labelled German by list order.
+  if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) {
+    const tied = sorted.filter(([, score]) => score === sorted[0][1]).map(([lang]) => lang);
+    const broken = breakSpanishPortugueseTie(text, words, tied);
+    if (!broken) return { primary: 'unknown', all: [] };
+    primary = broken;
+  }
+
   const all = sorted.filter(([, score]) => score > 2).map(([lang]) => lang);
   return { primary, all: all.length > 0 ? all : [primary] };
 }
